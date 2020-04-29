@@ -2,10 +2,10 @@
 The paper is available at: www.archix,org ...
 
 ## Library Versions
-Python 3.5
-Keras v2.2.5
-Tensorflow v1.12.0
-Warning: Theano backend is not tested for now.
+* Python 3.5
+* Keras v2.2.5
+* Tensorflow v1.12.0
+* Warning: Theano backend is not tested for now.
 
 ## Train a Target Model
 You lunch an attack, you first need to train a model. You can train a target model by running:
