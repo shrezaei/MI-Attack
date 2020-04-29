@@ -1,15 +1,12 @@
 from __future__ import print_function
 import keras
-from keras.datasets import mnist
 from keras.models import Sequential
 from keras.layers import Dense
-from keras.datasets import cifar10
-from keras.datasets import cifar100
 import numpy as np
-from sklearn.metrics import f1_score, precision_score, recall_score, balanced_accuracy_score
+from sklearn.metrics import f1_score, precision_score, recall_score, balanced_accuracy_score, accuracy_score
 from matplotlib import pyplot as plt
 from matplotlib import rcParams
-from utils import average_over_positive_values, average_over_positive_values_of_2d_array
+from utils import average_over_positive_values, average_over_positive_values_of_2d_array, wigthed_average, load_Data_with_imagenet_id
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from xgboost import XGBClassifier
@@ -22,75 +19,8 @@ plt.rc('ps', fonttype=42)
 show_MI_attack = True
 show_blind_attack = True
 
-def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samples_attacker_knows, save_confidence_histogram, show_MI_attack_separate_result, num_classes, num_targeted_classes, model_name, verbose):
-    if dataset == "mnist":
-        (x_train, y_train), (x_test, y_test) = mnist.load_data()
-        x_train = x_train.reshape(x_train.shape[0], 28, 28, 1)
-        x_test = x_test.reshape(x_test.shape[0], 28, 28, 1)
-    elif dataset == "cifar_10":
-        (x_train, y_train), (x_test, y_test) = cifar10.load_data()
-    else:
-        (x_train, y_train), (x_test, y_test) = cifar100.load_data()
-
-    # Convert class vectors to binary class matrices.
-    y_train = keras.utils.to_categorical(y_train, num_classes)
-    y_test = keras.utils.to_categorical(y_test, num_classes)
-
-    x_train = x_train.astype('float32')
-    x_test = x_test.astype('float32')
-    x_train /= 255
-    x_test /= 255
-
+def conf_based_attack_imagenet(dataset, attack_classifier, sampling, what_portion_of_samples_attacker_knows, save_confidence_histogram, show_MI_attack_separate_result, num_classes, num_targeted_classes, model_name, verbose, imagenet_path):
     model = keras.models.load_model(model_name)
-
-    train_stat = model.evaluate(x_train, y_train, verbose=0)
-    test_stat = model.evaluate(x_test, y_test, verbose=0)
-
-    acc_train = train_stat[1]
-    loss_train = train_stat[0]
-
-    acc_test = test_stat[1]
-    loss_test = test_stat[0]
-
-    print(acc_train, acc_test)
-
-    confidence_train = model.predict(x_train)
-    confidence_test = model.predict(x_test)
-    labels_train_by_model = np.argmax(confidence_train, axis=1)
-    labels_test_by_model = np.argmax(confidence_test, axis=1)
-    labels_train = np.argmax(y_train, axis=1)
-    labels_test = np.argmax(y_test, axis=1)
-
-    temp_indexer = np.arange(confidence_train.shape[0])
-    temp_all_conf_array = confidence_train[temp_indexer, labels_train]
-    conf_train = np.average(temp_all_conf_array)
-    conf_train_std = np.std(temp_all_conf_array)
-
-    correctly_classified_indexes_train = labels_train_by_model == labels_train
-    temp_correct_conf_array = confidence_train[temp_indexer[correctly_classified_indexes_train], labels_train[correctly_classified_indexes_train]]
-    conf_train_correct_only = np.average(temp_correct_conf_array)
-    conf_train_correct_only_std = np.std(temp_correct_conf_array)
-
-    incorrectly_classified_indexes_train = labels_train_by_model != labels_train
-    temp_incorrect_conf_array = confidence_train[temp_indexer[incorrectly_classified_indexes_train], labels_train_by_model[incorrectly_classified_indexes_train]]
-    conf_train_incorrect_only = np.average(temp_incorrect_conf_array)
-    conf_train_incorrect_only_std = np.std(temp_incorrect_conf_array)
-
-    # Compute average confidence for test set
-    temp_indexer = np.arange(confidence_test.shape[0])
-    temp_all_conf_array = confidence_test[temp_indexer, labels_test]
-    conf_test = np.average(temp_all_conf_array)
-    conf_test_std = np.std(temp_all_conf_array)
-
-    correctly_classified_indexes_test = labels_test_by_model == labels_test
-    temp_correct_conf_array = confidence_test[temp_indexer[correctly_classified_indexes_test], labels_test[correctly_classified_indexes_test]]
-    conf_test_correct_only = np.average(temp_correct_conf_array)
-    conf_test_correct_only_std = np.std(temp_correct_conf_array)
-
-    incorrectly_classified_indexes_test = labels_test_by_model != labels_test
-    temp_incorrect_conf_array = confidence_test[temp_indexer[incorrectly_classified_indexes_test], labels_test_by_model[incorrectly_classified_indexes_test]]
-    conf_test_incorrect_only = np.average(temp_incorrect_conf_array)
-    conf_test_incorrect_only_std = np.std(temp_incorrect_conf_array)
 
     #To store per-class MI attack accuracy
     MI_attack_per_class = np.zeros(num_targeted_classes) - 1
@@ -131,20 +61,89 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
     MI_attack_blind_f1_per_class_correctly_labeled = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_blind_f1_per_class_incorrectly_labeled = np.zeros((num_targeted_classes, 2)) - 1
 
-    for j in range(num_targeted_classes):
-        #Prepare the data for training and testing attack models (for all data and also correctly labeled samples)
-        class_yes_x = confidence_train[tuple([labels_train == j])]
-        class_no_x = confidence_test[tuple([labels_test == j])]
+    #Orinigal target model performance
+    conf_train = np.zeros(num_targeted_classes) - 1
+    conf_train_std = np.zeros(num_targeted_classes) - 1
+    conf_test = np.zeros(num_targeted_classes) - 1
+    conf_test_std = np.zeros(num_targeted_classes) - 1
 
-        if class_yes_x.shape[0] < 15 or class_no_x.shape[0] < 15:
+    conf_train_correct_only = np.zeros(num_targeted_classes) - 1
+    conf_train_correct_only_std = np.zeros(num_targeted_classes) - 1
+    conf_train_incorrect_only = np.zeros(num_targeted_classes) - 1
+    conf_train_incorrect_only_std = np.zeros(num_targeted_classes) - 1
+
+    conf_test_correct_only = np.zeros(num_targeted_classes) - 1
+    conf_test_correct_only_std = np.zeros(num_targeted_classes) - 1
+    conf_test_incorrect_only = np.zeros(num_targeted_classes) - 1
+    conf_test_incorrect_only_std = np.zeros(num_targeted_classes) - 1
+
+    train_acc = np.zeros(num_targeted_classes) - 1
+    test_acc = np.zeros(num_targeted_classes) - 1
+    train_samples = np.zeros(num_targeted_classes) - 1
+    test_samples = np.zeros(num_targeted_classes) - 1
+
+    for j in range(num_targeted_classes):
+    # for j in range(98,100):
+
+        (x_train, y_train), (x_test, y_test), keras_class_id = load_Data_with_imagenet_id(j+1, imagenet_path=imagenet_path)
+
+        x_train = keras.applications.inception_v3.preprocess_input(x_train)
+        x_test = keras.applications.inception_v3.preprocess_input(x_test)
+        train_samples[j] = x_train.shape[0]
+        test_samples[j] = x_test.shape[0]
+
+        confidence_train = model.predict(x_train)
+        confidence_test = model.predict(x_test)
+        labels_train_by_model = np.argmax(confidence_train, axis=1)
+        labels_test_by_model = np.argmax(confidence_test, axis=1)
+
+        train_acc[j] = accuracy_score(y_train, labels_train_by_model)
+        test_acc[j] = accuracy_score(y_test, labels_test_by_model)
+
+        labels_train = y_train
+        labels_test = y_test
+        y_train = keras.utils.to_categorical(y_train, num_classes)
+        y_test = keras.utils.to_categorical(y_test, num_classes)
+
+        conf_train[j] = np.average(confidence_train[:, keras_class_id])
+        conf_train_std[j] = np.std(confidence_train[:, keras_class_id])
+
+        correctly_classified_indexes_train = labels_train_by_model == labels_train
+        if np.sum(correctly_classified_indexes_train) > 0:
+            conf_train_correct_only[j] = np.average(confidence_train[correctly_classified_indexes_train, keras_class_id])
+            conf_train_correct_only_std[j] = np.std(confidence_train[correctly_classified_indexes_train, keras_class_id])
+
+        incorrectly_classified_indexes_train = labels_train_by_model != labels_train
+        if np.sum(incorrectly_classified_indexes_train) > 0:
+            conf_train_incorrect_only[j] = np.average(confidence_train[incorrectly_classified_indexes_train, keras_class_id])
+            conf_train_incorrect_only_std[j] = np.std(confidence_train[incorrectly_classified_indexes_train, keras_class_id])
+
+        # Compute average confidence for test set
+        conf_test[j] = np.average(confidence_test[:, keras_class_id])
+        conf_test_std[j] = np.std(confidence_test[:, keras_class_id])
+
+        correctly_classified_indexes_test = labels_test_by_model == labels_test
+        if np.sum(correctly_classified_indexes_test) > 0:
+            conf_test_correct_only[j] = np.average(confidence_test[correctly_classified_indexes_test, keras_class_id])
+            conf_test_correct_only_std[j] = np.std(confidence_test[correctly_classified_indexes_test, keras_class_id])
+
+        incorrectly_classified_indexes_test = labels_test_by_model != labels_test
+        if np.sum(incorrectly_classified_indexes_test) > 0:
+            conf_test_incorrect_only[j] = np.average(confidence_test[incorrectly_classified_indexes_test, keras_class_id])
+            conf_test_incorrect_only_std[j] = np.std(confidence_test[incorrectly_classified_indexes_test, keras_class_id])
+
+        class_yes_x = confidence_train
+        class_no_x = confidence_test
+
+        if class_yes_x.shape[0] < 20 or class_no_x.shape[0] < 20:
             print("Class " + str(j) + " doesn't have enough sample for training an attack model!")
             continue
 
-        class_yes_x_correctly_labeled = correctly_classified_indexes_train[tuple([labels_train == j])]
-        class_no_x_correctly_labeled = correctly_classified_indexes_test[tuple([labels_test == j])]
+        class_yes_x_correctly_labeled = correctly_classified_indexes_train
+        class_no_x_correctly_labeled = correctly_classified_indexes_test
 
-        class_yes_x_incorrectly_labeled = incorrectly_classified_indexes_train[tuple([labels_train == j])]
-        class_no_x_incorrectly_labeled = incorrectly_classified_indexes_test[tuple([labels_test == j])]
+        class_yes_x_incorrectly_labeled = incorrectly_classified_indexes_train
+        class_no_x_incorrectly_labeled = incorrectly_classified_indexes_test
 
         if save_confidence_histogram:
             temp = class_yes_x[class_yes_x_correctly_labeled]
@@ -157,7 +156,7 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
             plt.legend()
             plt.xlabel("Class Number")
             plt.ylabel("Average Confidence")
-            plt.savefig('figures/conf histogram/' + dataset + '/correct-' + str(j) + '.eps', bbox_inches='tight')
+            plt.savefig('figures/conf histogram/' + dataset + '/correct-' + str(j) + '.eps')
             plt.close()
 
             temp = class_yes_x[class_yes_x_incorrectly_labeled]
@@ -170,18 +169,18 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
             plt.legend()
             plt.xlabel("Class Number")
             plt.ylabel("Average Confidence")
-            plt.savefig('figures/conf histogram/' + dataset + '/misclassified-' + str(j) + '.eps', bbox_inches='tight')
+            plt.savefig('figures/conf histogram/' + dataset + '/misclassified-' + str(j) + '.eps')
             plt.close()
 
             temp = class_yes_x[class_yes_x_correctly_labeled]
             temp2 = class_no_x[class_no_x_correctly_labeled]
             bins = np.arange(50) / 50
             plt.style.use('seaborn-deep')
-            n, bins, patches = plt.hist([temp[:, j], temp2[:, j]], bins, normed=1, alpha=1, label=['Train samples', 'Test samples'])
+            n, bins, patches = plt.hist([temp[:, keras_class_id], temp2[:, keras_class_id]], bins, normed=1, alpha=1, label=['Train samples', 'Test samples'])
             plt.xlabel('Model Confidence')
             plt.ylabel('Probability (%)')
             plt.legend(loc='upper left')
-            plt.savefig('figures/conf histogram/' + dataset + '/' + str(j) + '.eps', bbox_inches='tight')
+            plt.savefig('figures/conf histogram/' + dataset + '/' + str(j) + '.eps')
             plt.close()
 
 
@@ -218,7 +217,6 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
                 class_yes_x_train = np.tile(class_yes_x_train, (int(n_size / y_size), 1))
                 class_yes_y_train = np.ones(class_yes_x_train.shape[0])
 
-
         print('MI attack on class ', j)
         MI_x_train = np.concatenate((class_yes_x_train, class_no_x_train), axis=0)
         MI_y_train = np.concatenate((class_yes_y_train, class_no_y_train), axis=0)
@@ -227,13 +225,10 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
         MI_correctly_labeled_indexes = np.concatenate((class_yes_x_correctly_labeled, class_no_x_correctly_labeled), axis=0)
         MI_incorrectly_labeled_indexes = np.concatenate((class_yes_x_incorrectly_labeled, class_no_x_incorrectly_labeled), axis=0)
 
-
         #preparing data to train an attack model for incorrectly labeled samples
         if show_MI_attack_separate_result:
             cor_class_yes_x = confidence_train[correctly_classified_indexes_train]
             cor_class_no_x = confidence_test[correctly_classified_indexes_test]
-            cor_class_yes_x = cor_class_yes_x[np.argmax(cor_class_yes_x, axis=1) == j]
-            cor_class_no_x = cor_class_no_x[np.argmax(cor_class_no_x, axis=1) == j]
 
             if cor_class_yes_x.shape[0] < 15 or cor_class_no_x.shape[0] < 15:
                 print("Class " + str(j) + " doesn't have enough sample for training an attack model!")
@@ -281,9 +276,8 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
                 attack_model.add(Dense(128, input_dim=num_classes, activation='relu'))
                 attack_model.add(Dense(64, activation='relu'))
                 attack_model.add(Dense(1, activation='sigmoid'))
-                attack_model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['acc'])
-                attack_model.fit(MI_x_train, MI_y_train, validation_data=(MI_x_test, MI_y_test), epochs=30, batch_size=32, verbose=False, shuffle=True)
-
+                attack_model.compile(loss='binary_crossentropy', optimizer=keras.optimizers.Adam(lr=1e-34), metrics=['acc'])
+                attack_model.fit(MI_x_train, MI_y_train, validation_data=(MI_x_test, MI_y_test), epochs=40, batch_size=32, verbose=False, shuffle=True)
             elif attack_classifier == "RF":
                 n_est = [500, 800, 1500, 2500, 5000]
                 max_f = ['auto', 'sqrt']
@@ -305,7 +299,6 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
                 if verbose:
                     print(RFR_random.best_params_)
                 attack_model = RFR_random.best_estimator_
-
 
             elif attack_classifier == "XGBoost":
                 temp_model = XGBClassifier()
@@ -330,17 +323,16 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
             MI_attack_f1_per_class[j] = f1_score(MI_y_test, y_pred, average=None)
 
             # MI attack accuracy on correctly labeled
-            if np.sum(MI_correctly_labeled_indexes) > 0:
-                temp_x = MI_x_test[MI_correctly_labeled_indexes]
-                temp_y = MI_y_test[MI_correctly_labeled_indexes]
-                if attack_classifier == "NN":
-                    y_pred = attack_model.predict_classes(temp_x)
-                else:
-                    y_pred = attack_model.predict(temp_x)
-                MI_attack_per_class_correctly_labeled[j] = balanced_accuracy_score(temp_y, y_pred)
-                MI_attack_prec_per_class_correctly_labeled[j] = precision_score(temp_y, y_pred, average=None)
-                MI_attack_rcal_per_class_correctly_labeled[j] = recall_score(temp_y, y_pred, average=None)
-                MI_attack_f1_per_class_correctly_labeled[j] = f1_score(temp_y, y_pred, average=None)
+            temp_x = MI_x_test[MI_correctly_labeled_indexes]
+            temp_y = MI_y_test[MI_correctly_labeled_indexes]
+            if attack_classifier == "NN":
+                y_pred = attack_model.predict_classes(temp_x)
+            else:
+                y_pred = attack_model.predict(temp_x)
+            MI_attack_per_class_correctly_labeled[j] = balanced_accuracy_score(temp_y, y_pred)
+            MI_attack_prec_per_class_correctly_labeled[j] = precision_score(temp_y, y_pred, average=None)
+            MI_attack_rcal_per_class_correctly_labeled[j] = recall_score(temp_y, y_pred, average=None)
+            MI_attack_f1_per_class_correctly_labeled[j] = f1_score(temp_y, y_pred, average=None)
 
             # MI attack accuracy on incorrectly labeled
             if np.sum(MI_incorrectly_labeled_indexes) > 0:
@@ -372,10 +364,11 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
                 print('Recall:', MI_attack_rcal_per_class_incorrectly_labeled[j])
                 print('F1:', MI_attack_f1_per_class_incorrectly_labeled[j])
 
+
         if show_blind_attack:
             # MI_x_train_blind = MI_x_train[:, j]     #To be fare, I just use the test test, to compare with other attack, so I comment it
             MI_x_test_blind = np.argmax(MI_x_test, axis=1)
-            MI_predicted_y_test_blind = [1 if l==j else 0 for l in MI_x_test_blind]
+            MI_predicted_y_test_blind = [1 if l==keras_class_id else 0 for l in MI_x_test_blind]
             MI_predicted_y_test_blind = np.array(MI_predicted_y_test_blind)
 
             # MI dump attack accuracy on all data
@@ -480,22 +473,21 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
                 print('Recall:', MI_attack_rcal_per_class_correctly_labeled_separate[j])
                 print('F1:', MI_attack_f1_per_class_correctly_labeled_separate[j])
 
-    if show_MI_attack:
-        MI_attack, MI_attack_std = average_over_positive_values(MI_attack_per_class)
-        MI_attack_correct_only, MI_attack_correct_only_std = average_over_positive_values(MI_attack_per_class_correctly_labeled)
-        MI_attack_incorrect_only, MI_attack_incorrect_only_std = average_over_positive_values(MI_attack_per_class_incorrectly_labeled)
+    MI_attack, MI_attack_std = average_over_positive_values(MI_attack_per_class)
+    MI_attack_correct_only, MI_attack_correct_only_std = average_over_positive_values(MI_attack_per_class_correctly_labeled)
+    MI_attack_incorrect_only, MI_attack_incorrect_only_std = average_over_positive_values(MI_attack_per_class_incorrectly_labeled)
 
-        MI_attack_prec, MI_attack_prec_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class)
-        MI_attack_prec_correct_only, MI_attack_prec_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_correctly_labeled)
-        MI_attack_prec_incorrect_only, MI_attack_prec_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_incorrectly_labeled)
+    MI_attack_prec, MI_attack_prec_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class)
+    MI_attack_prec_correct_only, MI_attack_prec_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_correctly_labeled)
+    MI_attack_prec_incorrect_only, MI_attack_prec_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_incorrectly_labeled)
 
-        MI_attack_rcal, MI_attack_rcal_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class)
-        MI_attack_rcal_correct_only, MI_attack_rcal_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_correctly_labeled)
-        MI_attack_rcal_incorrect_only, MI_attack_rcal_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_incorrectly_labeled)
+    MI_attack_rcal, MI_attack_rcal_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class)
+    MI_attack_rcal_correct_only, MI_attack_rcal_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_correctly_labeled)
+    MI_attack_rcal_incorrect_only, MI_attack_rcal_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_incorrectly_labeled)
 
-        MI_attack_f1, MI_attack_f1_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class)
-        MI_attack_f1_correct_only, MI_attack_f1_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_correctly_labeled)
-        MI_attack_f1_incorrect_only, MI_attack_f1_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_incorrectly_labeled)
+    MI_attack_f1, MI_attack_f1_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class)
+    MI_attack_f1_correct_only, MI_attack_f1_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_correctly_labeled)
+    MI_attack_f1_incorrect_only, MI_attack_f1_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_incorrectly_labeled)
 
     if show_blind_attack:
         MI_attack_blind, MI_attack_blind_std = average_over_positive_values(MI_attack_blind_per_class)
@@ -524,7 +516,24 @@ def conf_based_attack(dataset, attack_classifier, sampling, what_portion_of_samp
     print("Final results:")
     print("Values are in a pair of average and standard deviation.")
     print("\nTarget model accuracy:")
+    acc_train = wigthed_average(train_acc, train_samples)
+    acc_test = wigthed_average(test_acc, test_samples)
     print(str(np.round(acc_train*100, 2)), str(np.round(acc_test*100, 2)))
+
+
+    conf_train = wigthed_average(conf_train, train_samples)
+    conf_train_std = wigthed_average(conf_train_std, train_samples)
+    conf_test = wigthed_average(conf_test, test_samples)
+    conf_test_std = wigthed_average(conf_test_std, test_samples)
+    conf_train_correct_only = wigthed_average(conf_train_correct_only, train_samples)
+    conf_train_correct_only_std = wigthed_average(conf_train_correct_only_std, train_samples)
+    conf_test_correct_only = wigthed_average(conf_test_correct_only, test_samples)
+    conf_test_correct_only_std = wigthed_average(conf_test_correct_only_std, test_samples)
+    conf_train_incorrect_only = wigthed_average(conf_train_incorrect_only, train_samples)
+    conf_train_incorrect_only_std = wigthed_average(conf_train_incorrect_only_std, train_samples)
+    conf_test_incorrect_only = wigthed_average(conf_test_incorrect_only, test_samples)
+    conf_test_incorrect_only_std = wigthed_average(conf_test_incorrect_only_std, test_samples)
+
     print("\nTarget model confidence:")
     print('All train data: ', str(np.round(conf_train*100, 2)), str(np.round(conf_train_std*100, 2)))
     print('All test data: ', str(np.round(conf_test*100, 2)), str(np.round(conf_test_std*100, 2)))
