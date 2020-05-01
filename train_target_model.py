@@ -256,7 +256,7 @@ if __name__ == '__main__':
 
     model.compile(loss='categorical_crossentropy', optimizer=opt, metrics=['accuracy'])
     model.fit(x_train, y_train, validation_data=(x_test, y_test), epochs=num_epochs, shuffle=True, batch_size=batch_size,
-                            callbacks=callbacks, use_multiprocessing=True)
+                            callbacks=callbacks)
 
     # Save model and weights
     model_path = os.path.join(save_dir, model_name)
