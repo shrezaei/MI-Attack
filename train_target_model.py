@@ -67,11 +67,13 @@ if __name__ == '__main__':
     model_name = sub_model_name + 'final.h5'
 
     if dataset == "mnist":
+        num_epochs = 30
         num_classes = 10
         (x_train, y_train), (x_test, y_test) = mnist.load_data()
         x_train = x_train.reshape(x_train.shape[0], 28, 28, 1)
         x_test = x_test.reshape(x_test.shape[0], 28, 28, 1)
     elif dataset == "cifar_10":
+        num_epochs = 30
         num_classes = 10
         if args.conv_blocks <= 0:
             conv_blocks = 2
@@ -143,6 +145,8 @@ if __name__ == '__main__':
         print("Unknown dataset/Model!")
         exit()
 
+    num_epochs = args.epochs
+    
     # Convert class vectors to binary class matrices.
     y_train = keras.utils.to_categorical(y_train, num_classes)
     y_test = keras.utils.to_categorical(y_test, num_classes)
