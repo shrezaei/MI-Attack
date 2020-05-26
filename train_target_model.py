@@ -38,7 +38,7 @@ parser = argparse.ArgumentParser(description='Train a target model.')
 parser.add_argument('-d', '--dataset', type=str, default='cifar_10', choices=['mnist', 'cifar_10', 'cifar_100', 'cifar_100_resnet', 'cifar_100_densenet', 'imagenet_inceptionv3', 'imagenet_xception'],  help='Indicate dataset and target model archtecture.')
 parser.add_argument('-c', '--conv_blocks', type=int, default=0, help='The number of conv blocks for CIFAR10 and CIFAR100.')
 parser.add_argument('-b', '--batch_size', type=int, default=64, help='Batch size')
-parser.add_argument('-e', '--epochs', type=int, default=200, help='Number of training epochs')
+parser.add_argument('-e', '--epochs', type=int, help='Number of training epochs')
 parser.add_argument('-l', '--learning_rate', type=float, default=0.001, help='learning rate.')
 parser.add_argument('-P', '--periodical_save', default=False, help='Save the model periodically during training.', action='store_true')
 parser.add_argument('-p', '--save_period', type=int, default=10, help='Save the model each p epoch.')
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     use_lr_scheduler = args.lr_scheduler
     periodic_save = args.periodical_save
     saving_period = args.save_period
-    num_epochs = args.epochs
+    num_epochs = 200
     learning_rate = args.learning_rate
 
     save_dir = os.path.join(os.getcwd(), 'saved_models')
@@ -145,7 +145,8 @@ if __name__ == '__main__':
         print("Unknown dataset/Model!")
         exit()
 
-    num_epochs = args.epochs
+    if args.epochs is not None:
+        num_epochs = args.epochs
     
     # Convert class vectors to binary class matrices.
     y_train = keras.utils.to_categorical(y_train, num_classes)
