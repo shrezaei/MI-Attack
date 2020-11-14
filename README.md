@@ -12,7 +12,7 @@ In case you want to train or convert pytorch models (from bearpaw repository):
 
 
 ## Train a Target Model
-You lunch an attack, you first need to train a model. You can use any model you have previously trained with Keras/Tensorflow. To skip this part, you can directly download the models we used from GoogleDrive PATH HERE.
+You lunch an attack, you first need to train a model. You can use any model you have previously trained with Keras/Tensorflow. To skip this part, you can directly download the models we used from https://drive.google.com/file/d/1XQBo3rlZO58mSK57T2Rmv-kniVcvSe9g/view?usp=sharing.
 To train an mnist model:
 ```
 $ python train_target_model.py -d cifar_10
