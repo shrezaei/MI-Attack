@@ -3,11 +3,12 @@ import argparse
 import os.path
 import numpy as np
 argparse
-from utils import average_over_positive_values, average_over_positive_values_of_2d_array, wigthed_average
+from utils import average_over_positive_values, average_over_positive_values_of_2d_array, wigthed_average, false_alarm_rate
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix, balanced_accuracy_score, accuracy_score, roc_auc_score
 show_correct_distance = True
 show_incorrect_distance = True
+index_available_in_the_saved_files = True
 
 #skip attack model training if there is no correctly labeled samples
 cor_skip_threshold = 10
@@ -15,32 +16,25 @@ cor_skip_threshold = 10
 incor_skip_threshold = 10
 
 parser = argparse.ArgumentParser(description='MI attack besed on distance to the boundary.')
-parser.add_argument('-d', '--dataset', type=str, default='cifar_10', choices=['mnist', 'cifar_10', 'cifar_100', 'cifar_100_resnet', 'cifar_100_densenet', 'imagenet_inceptionv3', 'imagenet_xception'], help='Indicate dataset and target model. If you trained your own target model, the model choice will be overwritten')
-parser.add_argument('-m', '--model_path', type=str, default='none', help='Indicate the path to the target model. If you used the train_target_model.py to train the model, leave this field to the default value.')
+parser.add_argument('-d', '--dataset', type=str, default='cifar10', choices=['mnist', 'cifar10', 'cifar100', 'imagenet'], help='Indicate dataset and target model. If you trained your own target model, the model choice will be overwritten')
+parser.add_argument('-p', '--save_path', type=str, default='saved_distances/cifar10/alexnet', help='Indicate the directory that the computed distances are saved into.')
 args = parser.parse_args()
 
 if __name__ == '__main__':
     dataset = args.dataset
-    distance_saved_directory = 'saved_distances/'
+    distance_saved_directory = args.save_path + '/'
 
     model_save_dir = os.path.join(os.getcwd(), 'saved_models')
-    if dataset == "mnist" or dataset == "cifar_10":
-        model_name = model_save_dir + '/' + dataset + '_weights_' + 'final.h5'
+    if dataset == "mnist" or dataset == "cifar10":
         num_classes = 10
-    elif dataset == "cifar_100" or dataset == "cifar_100_resnet" or dataset == "cifar_100_densenet":
-        model_name = model_save_dir + '/' + dataset + '_weights_' + 'final.h5'
+    elif dataset == "cifar100":
         num_classes = 100
-    elif dataset == "imagenet_inceptionv3":
-        model_name = model_save_dir + "/imagenet_inceptionV3_v2.hdf5"
-        num_classes = 1000
-    elif dataset == "imagenet_xception":
-        model_name = model_save_dir + "/imagenet_xception_v2.hdf5"
+    elif dataset == "imagenet":
         num_classes = 1000
     else:
         print("Unknown dataset!")
         exit()
-    if args.model_path != 'none':
-        model_name = args.model_path
+
 
     distance_correct_train = np.zeros(num_classes) - 1
     distance_correct_train_std = np.zeros(num_classes) - 1
@@ -58,8 +52,14 @@ if __name__ == '__main__':
 
 
     #To store per-class MI attack accuracy
+    bal_acc_per_class_correctly_labeled = np.zeros(num_classes) - 1
+    bal_acc_per_class_incorrectly_labeled = np.zeros(num_classes) - 1
+
     acc_per_class_correctly_labeled = np.zeros(num_classes) - 1
     acc_per_class_incorrectly_labeled = np.zeros(num_classes) - 1
+
+    far_per_class_correctly_labeled = np.zeros(num_classes) - 1
+    far_per_class_incorrectly_labeled = np.zeros(num_classes) - 1
 
     prec_per_class_correctly_labeled = np.zeros((num_classes, 2)) - 1
     prec_per_class_incorrectly_labeled = np.zeros((num_classes, 2)) - 1
@@ -102,24 +102,38 @@ if __name__ == '__main__':
         print("train accu: ", results)
 
         y_pred = model.predict(x_test)
-        accuracy = balanced_accuracy_score(y_test, y_pred)
+        bal_accuracy = balanced_accuracy_score(y_test, y_pred)
+        accuracy = accuracy_score(y_test, y_pred)
+        far = false_alarm_rate(y_test, y_pred)
         precision = precision_score(y_test, y_pred, average=None)
         recall = recall_score(y_test, y_pred, average=None)
         f1 = f1_score(y_test, y_pred, average=None)
 
-        return accuracy, precision, recall, f1
+        return bal_accuracy, accuracy, far, precision, recall, f1
 
     for j in range(num_classes):
 
         if show_correct_distance:
-            train_data_file = distance_saved_directory + model_name.split('/')[-1] + '-cor-train-' + str(j) + '.npy'
-            test_data_file = distance_saved_directory + model_name.split('/')[-1] + '-cor-test-' + str(j) + '.npy'
-            if os.path.isfile(train_data_file) and os.path.isfile(test_data_file):
-                distance_per_sample_train = np.load(train_data_file)
-                distance_per_sample_test = np.load(test_data_file)
+            if index_available_in_the_saved_files:
+                train_data_file = distance_saved_directory + 'cor-train-' + str(j) + '.npz'
+                test_data_file = distance_saved_directory + 'cor-test-' + str(j) + '.npz'
+                if os.path.isfile(train_data_file) and os.path.isfile(test_data_file):
+                    distance_per_sample_train = np.nan_to_num(np.load(train_data_file)['arr_0'], posinf=100000,
+                                                              neginf=-100000)
+                    distance_per_sample_test = np.nan_to_num(np.load(test_data_file)['arr_0'], posinf=100000,
+                                                             neginf=-100000)
+                else:
+                    print("No distance file is available for class " + str(j) + " (for correctly labeled samples)!")
+                    continue
             else:
-                print("No distance file is available for class " + str(j) + " (for correctly labeled samples)!")
-                continue
+                train_data_file = distance_saved_directory + 'cor-train-' + str(j) + '.npy'
+                test_data_file = distance_saved_directory + 'cor-test-' + str(j) + '.npy'
+                if os.path.isfile(train_data_file) and os.path.isfile(test_data_file):
+                    distance_per_sample_train = np.nan_to_num(np.load(train_data_file), posinf=100000, neginf=-100000)
+                    distance_per_sample_test = np.nan_to_num(np.load(test_data_file), posinf=100000, neginf=-100000)
+                else:
+                    print("No distance file is available for class " + str(j) + " (for correctly labeled samples)!")
+                    continue
 
             distance_per_sample_train = distance_per_sample_train[distance_per_sample_train != -1]
             distance_per_sample_test = distance_per_sample_test[distance_per_sample_test != -1]
@@ -137,18 +151,33 @@ if __name__ == '__main__':
             if correct_train_samples[j] < cor_skip_threshold or correct_test_samples[j] < cor_skip_threshold:
                 print("Not enough distance sammple is available for class " + str(j) + " (for correctly labeled samples)!")
             else:
-                acc_per_class_correctly_labeled[j], prec_per_class_correctly_labeled[j], rcal_per_class_correctly_labeled[j], \
-            f1_per_class_correctly_labeled[j] = fit_logistic_regression_model(distance_per_sample_train, distance_per_sample_test)
+                bal_acc_per_class_correctly_labeled[j], acc_per_class_correctly_labeled[j], \
+                far_per_class_correctly_labeled[j], prec_per_class_correctly_labeled[j], \
+                rcal_per_class_correctly_labeled[j], \
+                f1_per_class_correctly_labeled[j] = fit_logistic_regression_model(distance_per_sample_train,
+                                                                                  distance_per_sample_test)
 
         if show_incorrect_distance:
-            train_data_file = distance_saved_directory + model_name.split('/')[-1] + '-incor-train-' + str(j) + '.npy'
-            test_data_file = distance_saved_directory + model_name.split('/')[-1] + '-incor-test-' + str(j) + '.npy'
-            if os.path.isfile(train_data_file) and os.path.isfile(test_data_file):
-                distance_per_sample_train = np.load(train_data_file)
-                distance_per_sample_test = np.load(test_data_file)
+            if index_available_in_the_saved_files:
+                train_data_file = distance_saved_directory + 'incor-train-' + str(j) + '.npz'
+                test_data_file = distance_saved_directory + 'incor-test-' + str(j) + '.npz'
+                if os.path.isfile(train_data_file) and os.path.isfile(test_data_file):
+                    distance_per_sample_train = np.nan_to_num(np.load(train_data_file)['arr_0'], posinf=100000,
+                                                              neginf=-100000)
+                    distance_per_sample_test = np.nan_to_num(np.load(test_data_file)['arr_0'], posinf=100000,
+                                                             neginf=-100000)
+                else:
+                    print("No distance file is available for class " + str(j) + " (for incorrectly labeled samples)!")
+                    continue
             else:
-                print("No distance file is available for class " + str(j) + " (for incorrectly labeled samples)!")
-                continue
+                train_data_file = distance_saved_directory + 'incor-train-' + str(j) + '.npy'
+                test_data_file = distance_saved_directory + 'incor-test-' + str(j) + '.npy'
+                if os.path.isfile(train_data_file) and os.path.isfile(test_data_file):
+                    distance_per_sample_train = np.nan_to_num(np.load(train_data_file), posinf=100000, neginf=-100000)
+                    distance_per_sample_test = np.nan_to_num(np.load(test_data_file), posinf=100000, neginf=-100000)
+                else:
+                    print("No distance file is available for class " + str(j) + " (for incorrectly labeled samples)!")
+                    continue
 
             distance_per_sample_train = distance_per_sample_train[distance_per_sample_train != -1]
             distance_per_sample_test = distance_per_sample_test[distance_per_sample_test != -1]
@@ -165,8 +194,11 @@ if __name__ == '__main__':
             if incorrect_train_samples[j] < incor_skip_threshold or incorrect_test_samples[j] < incor_skip_threshold:
                 print("Not enough distance sammple is available for class " + str(j) + " (for incorrectly labeled samples)!")
             else:
-                acc_per_class_incorrectly_labeled[j], prec_per_class_incorrectly_labeled[j], rcal_per_class_incorrectly_labeled[j], \
-            f1_per_class_incorrectly_labeled[j] = fit_logistic_regression_model(distance_per_sample_train, distance_per_sample_test)
+                bal_acc_per_class_incorrectly_labeled[j], acc_per_class_incorrectly_labeled[j], \
+                far_per_class_incorrectly_labeled[j], prec_per_class_incorrectly_labeled[j], \
+                rcal_per_class_incorrectly_labeled[j], \
+                f1_per_class_incorrectly_labeled[j] = fit_logistic_regression_model(distance_per_sample_train,
+                                                                                    distance_per_sample_test)
 
 
     dist_correct_train = wigthed_average(distance_correct_train, correct_train_samples)
@@ -184,8 +216,14 @@ if __name__ == '__main__':
     print('Misclassified (train samples): ', str(np.round(dist_incorrect_train, 4)), str(np.round(dist_incorrect_train_std, 4)))
     print('Misclassified (test samples): ', str(np.round(dist_incorrect_test, 4)), str(np.round(dist_incorrect_test_std, 4)))
 
+    bal_acc_correct_only, bal_acc_correct_only_std = average_over_positive_values(bal_acc_per_class_correctly_labeled)
+    bal_acc_incorrect_only, bal_acc_incorrect_only_std = average_over_positive_values(bal_acc_per_class_incorrectly_labeled)
+
     acc_correct_only, acc_correct_only_std = average_over_positive_values(acc_per_class_correctly_labeled)
     acc_incorrect_only, acc_incorrect_only_std = average_over_positive_values(acc_per_class_incorrectly_labeled)
+
+    far_correct_only, far_correct_only_std = average_over_positive_values(far_per_class_correctly_labeled)
+    far_incorrect_only, far_incorrect_only_std = average_over_positive_values(far_per_class_incorrectly_labeled)
 
     prec_correct_only, prec_correct_only_std = average_over_positive_values_of_2d_array(prec_per_class_correctly_labeled)
     prec_incorrect_only, prec_incorrect_only_std = average_over_positive_values_of_2d_array(prec_per_class_incorrectly_labeled)
@@ -197,8 +235,12 @@ if __name__ == '__main__':
     f1_incorrect_only, f1_incorrect_only_std = average_over_positive_values_of_2d_array(f1_per_class_incorrectly_labeled)
 
     print("\n\nAttack accuracy: [average standard_deviation]")
-    print('Correctly classified: ', str(np.round(acc_correct_only*100, 2)), str(np.round(acc_correct_only_std*100, 2)))
-    print('Misclassified: ', str(np.round(acc_incorrect_only*100, 2)), str(np.round(acc_incorrect_only_std*100, 2)))
+    print('Correctly classified: ', str(np.round(bal_acc_correct_only*100, 2)), str(np.round(bal_acc_correct_only_std*100, 2)))
+    print('Misclassified: ', str(np.round(bal_acc_incorrect_only*100, 2)), str(np.round(bal_acc_incorrect_only_std*100, 2)))
+
+    print("\n\nAttack Far: [average standard_deviation]")
+    print('Correctly classified: ', str(np.round(far_correct_only*100, 2)), str(np.round(far_correct_only_std*100, 2)))
+    print('Misclassified: ', str(np.round(far_incorrect_only*100, 2)), str(np.round(far_incorrect_only_std*100, 2)))
 
     print("\nAttack precision:")
     print('Correctly classified: ', str(np.round(prec_correct_only*100, 2)), str(np.round(prec_correct_only_std*100, 2)))

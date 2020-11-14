@@ -2,6 +2,7 @@ import numpy as np
 import os
 import json
 from keras.preprocessing import image
+from sklearn.metrics import confusion_matrix
 
 
 def average_over_positive_values(a):
@@ -61,6 +62,26 @@ def wigthed_average_over_gradient_metrics(value, count):
         metric = value[:, i]
         avgs[i] = np.sum(metric[metric != -1] * count[metric != -1]) / np.sum(count[metric != -1])
     return avgs
+
+
+def false_alarm_rate(y_true, y_pred):
+    TP, TN, FP, FN = classification_scores(y_true, y_pred)
+    if FP + TN == 0:
+        return -1
+    else:
+        return FP / (FP + TN)
+
+
+def classification_scores(y_true, y_pred):
+    CM = confusion_matrix(y_true, y_pred)
+    if CM.shape[0] <= 1:
+        return (0, 0, 0, 0)
+
+    TN = CM[0][0]
+    FN = CM[1][0]
+    TP = CM[1][1]
+    FP = CM[0][1]
+    return (TP, TN, FP, FN)
 
 
 def imagenet_to_keras_mapping(id):

@@ -4,7 +4,7 @@ from attacks.intermediate_layer_attack import intermediate_layer_attack
 from attacks.intermediate_layer_attack_imagenet import intermediate_layer_attack_imagenet
 
 parser = argparse.ArgumentParser(description='MI attack besed on intermediate layers output.')
-parser.add_argument('-d', '--dataset', type=str, default='cifar_10', choices=['mnist', 'cifar_10', 'cifar_100', 'cifar_100_resnet', 'cifar_100_densenet', 'imagenet_inceptionv3', 'imagenet_xception'], help='Indicate dataset and target model. If you trained your own target model, the model choice will be overwritten')
+parser.add_argument('-d', '--dataset', type=str, default='cifar10', choices=['mnist', 'cifar10', 'cifar100', 'imagenet'], help='Indicate dataset and target model. If you trained your own target model, the model choice will be overwritten')
 parser.add_argument('-m', '--model_path', type=str, default='none', help='Indicate the path to the target model. If you used the train_target_model.py to train the model, leave this field to the default value.')
 parser.add_argument('-a', '--attack_model', type=str, default='NN', choices=['NN', 'RF', 'XGBoost'], help='MI Attack model (default is NN).')
 parser.add_argument('-s', '--sampling', type=str, default='none', choices=['none', 'undersampling', 'oversampling'], help='Indicate sampling. Useful for highly imbalaned cases.')
@@ -22,6 +22,7 @@ args = parser.parse_args()
 if __name__ == '__main__':
     verbose = args.verbose
     dataset = args.dataset
+    model_name = args.model_path
     intermediate_layer = args.intermediate_layer
     attack_classifier = args.attack_model
     sampling = args.sampling
@@ -35,33 +36,24 @@ if __name__ == '__main__':
     show_MI_attack_separate_result_for_incorrect = args.no_train_for_incorrect_misclassified
 
     save_dir = os.path.join(os.getcwd(), 'saved_models')
-    if dataset == "mnist" or dataset == "cifar_10":
-        model_name = save_dir + '/' + dataset + '_weights_' + 'final.h5'
+    num_classes = 10
+    if dataset == "mnist" or dataset == "cifar10":
         num_classes = 10
         num_targeted_classes = 10
-    elif dataset == "cifar_100" or dataset == "cifar_100_resnet" or dataset == "cifar_100_densenet":
-        model_name = save_dir + '/' + dataset + '_weights_' + 'final.h5'
+    elif dataset == "cifar100":
         num_classes = 100
         num_targeted_classes = 100
-    elif dataset == "imagenet_inceptionv3":
-        model_name = save_dir + "/imagenet_inceptionV3_v2.hdf5"
-        num_classes = 1000
-        num_targeted_classes = 100
-    elif dataset == "imagenet_xception":
-        model_name = save_dir + "/imagenet_xception_v2.hdf5"
+    elif dataset == "imagenet":
         num_classes = 1000
         num_targeted_classes = 100
     else:
         print("Unknown dataset!")
         exit()
 
-    if args.model_path != 'none':
-        model_name = args.model_path
-
-    if args.number_of_target_classes < num_classes and args.number_of_target_classes > 0:
+    if num_classes > args.number_of_target_classes > 0:
         num_targeted_classes = args.number_of_target_classes
 
-    if dataset == "imagenet_inceptionv3" or dataset == "imagenet_xception":
+    if dataset == "imagenet":
         intermediate_layer_attack_imagenet(dataset, intermediate_layer, attack_classifier, sampling, what_portion_of_samples_attacker_knows, num_classes, num_targeted_classes, model_name, verbose, show_MI_attack, show_MI_attack_separate_result, show_MI_attack_separate_result_for_incorrect, args.imagenet_path)
     else:
         intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sampling, what_portion_of_samples_attacker_knows, num_classes, num_targeted_classes, model_name, verbose, show_MI_attack, show_MI_attack_separate_result, show_MI_attack_separate_result_for_incorrect)
