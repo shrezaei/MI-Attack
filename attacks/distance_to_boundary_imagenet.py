@@ -143,8 +143,8 @@ def distance_to_boundary_imagenet(dataset, num_classes, num_targeted_classes, nu
                     print('Test samples progress: ', i, '/', cor_class_no_x.shape[0])
 
             if save_distances:
-                np.save(distance_save_dir + '/' + model_name.split('/')[-1] + '-cor-train-' + str(j), distance_per_sample_train)
-                np.save(distance_save_dir + '/' + model_name.split('/')[-1] + '-cor-test-' + str(j), distance_per_sample_test)
+                np.save(distance_save_dir + '/' + 'cor-train-' + str(j), distance_per_sample_train)
+                np.save(distance_save_dir + '/' + 'cor-test-' + str(j), distance_per_sample_test)
 
             distance_per_sample_train = distance_per_sample_train[distance_per_sample_train != -1]
             distance_per_sample_test = distance_per_sample_test[distance_per_sample_test != -1]
@@ -184,8 +184,8 @@ def distance_to_boundary_imagenet(dataset, num_classes, num_targeted_classes, nu
                         print('Train samples progress: ', i, '/', incor_class_no_x.shape[0])
 
                 if save_distances:
-                    np.save(distance_save_dir + 'save_distances/' + model_name.split('/')[-1] + '-incor-train-' + str(j), distance_per_sample_train)
-                    np.save(distance_save_dir + 'save_distances/' + model_name.split('/')[-1] + '-incor-test-' + str(j), distance_per_sample_test)
+                    np.save(distance_save_dir + 'save_distances/' + 'incor-train-' + str(j), distance_per_sample_train)
+                    np.save(distance_save_dir + 'save_distances/' + 'incor-test-' + str(j), distance_per_sample_test)
 
                 distance_per_sample_train = distance_per_sample_train[distance_per_sample_train != -1]
                 distance_per_sample_test = distance_per_sample_test[distance_per_sample_test != -1]

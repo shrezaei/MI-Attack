@@ -12,8 +12,8 @@ from keras.models import model_from_config
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # or any {'0', '1', '2'}
 progress_print_period = 20
 
-show_correct_gradient = True
-show_incorrect_gradient = True
+show_correct_gradients = True
+show_incorrect_gradients = True
 save_gradients = True
 
 
@@ -148,16 +148,21 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
         incorrectly_classified_indexes_test = labels_test_by_model != labels_test
 
 
-        if show_correct_gradient:
+        if show_correct_gradients:
             print('Computing gradient norms for class ', j)
             cor_class_yes_x = x_train[correctly_classified_indexes_train]
             cor_class_no_x = x_test[correctly_classified_indexes_test]
 
-            if num_of_samples_per_class:
+            cor_class_yes_indexes = np.nonzero(correctly_classified_indexes_train)[0]
+            cor_class_no_indexes = np.nonzero(correctly_classified_indexes_test)[0]
+
+            if num_of_samples_per_class > 0:
                 if cor_class_yes_x.shape[0] > num_of_samples_per_class:
                     cor_class_yes_x = cor_class_yes_x[:num_of_samples_per_class]
+                    cor_class_yes_indexes = cor_class_yes_indexes[:num_of_samples_per_class]
                 if cor_class_no_x.shape[0] > num_of_samples_per_class:
                     cor_class_no_x = cor_class_no_x[:num_of_samples_per_class]
+                    cor_class_no_indexes = cor_class_no_indexes[:num_of_samples_per_class]
 
 
             gradient_wrt_w_per_sample_train = gradient_based_attack_wrt_w_batch(model, cor_class_yes_x, j, num_classes)
@@ -170,10 +175,10 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
             model = reload_session(model_name)
 
             if save_gradients:
-                np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-cor-w-train-' + str(j), gradient_wrt_w_per_sample_train)
-                np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-cor-w-test-' + str(j), gradient_wrt_w_per_sample_test)
-                np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-cor-x-train-' + str(j), gradient_wrt_x_per_sample_train)
-                np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-cor-x-test-' + str(j), gradient_wrt_x_per_sample_test)
+                np.savez(gradient_save_dir + 'cor-w-train-' + str(j), gradient_wrt_w_per_sample_train, cor_class_yes_indexes)
+                np.savez(gradient_save_dir + 'cor-w-test-' + str(j), gradient_wrt_w_per_sample_test, cor_class_no_indexes)
+                np.savez(gradient_save_dir + 'cor-x-train-' + str(j), gradient_wrt_x_per_sample_train, cor_class_yes_indexes)
+                np.savez(gradient_save_dir + 'cor-x-test-' + str(j), gradient_wrt_x_per_sample_test, cor_class_no_indexes)
 
             gradient_norm_wrt_w_correct_train[j], gradient_norm_wrt_w_correct_train_std[j] = average_over_gradient_metrics(gradient_wrt_w_per_sample_train)
             gradient_norm_wrt_w_correct_test[j], gradient_norm_wrt_w_correct_test_std[j] = average_over_gradient_metrics(gradient_wrt_w_per_sample_test)
@@ -188,19 +193,23 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
             #print(gradient_norm_wrt_x_correct_train[j], gradient_norm_wrt_x_correct_train_std[j])
             #print(gradient_norm_wrt_x_correct_test[j], gradient_norm_wrt_x_correct_test_std[j])
 
-        if show_incorrect_gradient:
+        if show_incorrect_gradients:
             print("incorrectly classified:")
             incor_class_yes_x = x_train[incorrectly_classified_indexes_train]
             incor_class_no_x = x_test[incorrectly_classified_indexes_test]
+            incor_class_yes_indexes = np.nonzero(incorrectly_classified_indexes_train)[0]
+            incor_class_no_indexes = np.nonzero(incorrectly_classified_indexes_test)[0]
 
             if incor_class_yes_x.shape[0] < 5 or incor_class_no_x.shape[0] < 5:
                 print("skip distance computation for inccorectly labeled samples due to lack os misclassified samples!")
             else:
-                if num_of_samples_per_class:
+                if num_of_samples_per_class > 0:
                     if incor_class_yes_x.shape[0] > num_of_samples_per_class:
                         incor_class_yes_x = incor_class_yes_x[:num_of_samples_per_class]
+                        incor_class_yes_indexes = incor_class_yes_indexes[:num_of_samples_per_class]
                     if incor_class_no_x.shape[0] > num_of_samples_per_class:
                         incor_class_no_x = incor_class_no_x[:num_of_samples_per_class]
+                        incor_class_no_indexes = incor_class_no_indexes[:num_of_samples_per_class]
 
                 gradient_wrt_w_per_sample_train = gradient_based_attack_wrt_w_batch(model, incor_class_yes_x, j, num_classes)
                 gradient_wrt_x_per_sample_train = gradient_based_attack_wrt_x_batch(model, incor_class_yes_x, j, num_classes)
@@ -210,10 +219,10 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
                 model = reload_session(model_name)
 
                 if save_gradients:
-                    np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-incor-w-train-' + str(j), gradient_wrt_w_per_sample_train)
-                    np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-incor-w-test-' + str(j), gradient_wrt_w_per_sample_test)
-                    np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-incor-x-train-' + str(j), gradient_wrt_x_per_sample_train)
-                    np.save(gradient_save_dir + '/' + model_name.split('/')[-1] + '-incor-x-test-' + str(j), gradient_wrt_x_per_sample_test)
+                    np.savez(gradient_save_dir + 'incor-w-train-' + str(j), gradient_wrt_w_per_sample_train, incor_class_yes_indexes)
+                    np.savez(gradient_save_dir + 'incor-w-test-' + str(j), gradient_wrt_w_per_sample_test, incor_class_no_indexes)
+                    np.savez(gradient_save_dir + 'incor-x-train-' + str(j), gradient_wrt_x_per_sample_train, incor_class_yes_indexes)
+                    np.savez(gradient_save_dir + 'incor-x-test-' + str(j), gradient_wrt_x_per_sample_test, incor_class_no_indexes)
 
                 gradient_norm_wrt_w_incorrect_train[j], gradient_norm_wrt_w_incorrect_train_std[j] = average_over_gradient_metrics(gradient_wrt_w_per_sample_train)
                 gradient_norm_wrt_w_incorrect_test[j], gradient_norm_wrt_w_incorrect_test_std[j] = average_over_gradient_metrics(gradient_wrt_w_per_sample_test)
@@ -222,29 +231,6 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
 
                 incorrect_train_samples[j] = gradient_wrt_w_per_sample_train.shape[1]
                 incorrect_test_samples[j] = gradient_wrt_w_per_sample_test.shape[1]
-                #print(incorrect_train_samples[j], incorrect_test_samples[j])
-                #print(gradient_norm_wrt_w_incorrect_train[j], gradient_norm_wrt_w_incorrect_train_std[j])
-                #print(gradient_norm_wrt_w_incorrect_test[j], gradient_norm_wrt_w_incorrect_test_std[j])
-                #print(gradient_norm_wrt_x_incorrect_train[j], gradient_norm_wrt_x_incorrect_train_std[j])
-                #print(gradient_norm_wrt_x_incorrect_test[j], gradient_norm_wrt_x_incorrect_test_std[j])
-
-        avg_w_correct_train = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_correct_train, correct_train_samples)
-        avg_w_correct_train_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_correct_train_std, correct_train_samples)
-        avg_w_correct_test = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_correct_test, correct_test_samples)
-        avg_w_correct_test_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_correct_test_std, correct_test_samples)
-        avg_x_correct_train = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_correct_train, correct_train_samples)
-        avg_x_correct_train_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_correct_train_std, correct_train_samples)
-        avg_x_correct_test = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_correct_test, correct_test_samples)
-        avg_x_correct_test_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_correct_test_std, correct_test_samples)
-
-        avg_w_incorrect_train = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_incorrect_train, incorrect_train_samples)
-        avg_w_incorrect_train_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_incorrect_train_std, incorrect_train_samples)
-        avg_w_incorrect_test = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_incorrect_test, incorrect_test_samples)
-        avg_w_incorrect_test_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_w_incorrect_test_std, incorrect_test_samples)
-        avg_x_incorrect_train = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_incorrect_train, incorrect_train_samples)
-        avg_x_incorrect_train_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_incorrect_train_std, incorrect_train_samples)
-        avg_x_incorrect_test = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_incorrect_test, incorrect_test_samples)
-        avg_x_incorrect_test_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_incorrect_test_std, incorrect_test_samples)
 
         print("Class ", str(j), " is finished.")
 
@@ -267,7 +253,7 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
     avg_x_incorrect_test_std = wigthed_average_over_gradient_metrics(gradient_norm_wrt_x_incorrect_test_std, incorrect_test_samples)
 
     print("\n\nFinal Results:")
-    if show_correct_distance:
+    if show_correct_gradients:
         print("Correctly labeled (wrt w):")
         print("Train set: ", avg_w_correct_train, avg_w_correct_train_std)
         print("Test set: ", avg_w_correct_test, avg_w_correct_test_std)
@@ -277,7 +263,7 @@ def gradient_norms_imagenet(dataset, num_classes, num_targeted_classes, num_of_s
         print("Test set: ", avg_x_correct_test, avg_x_correct_test_std)
 
 
-    if show_incorrect_distance:
+    if show_incorrect_gradients:
         print("\nIncorrectly labeled (wrt w):")
         print("Train set: ", avg_w_incorrect_train, avg_w_incorrect_train_std)
         print("Test set: ", avg_w_incorrect_test, avg_w_incorrect_test_std)

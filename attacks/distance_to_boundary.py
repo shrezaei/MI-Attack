@@ -1,7 +1,8 @@
 from __future__ import print_function
+import tensorflow as tf
 import keras
 from keras.datasets import mnist
-from keras import backend as K
+from tensorflow.keras import backend as K
 from keras.datasets import cifar10, cifar100
 import numpy as np
 from utils import average_over_positive_values, wigthed_average
@@ -14,16 +15,27 @@ show_incorrect_distance = True
 save_distances = True
 
 
+def normalize_data(data, means, stds):
+    data /= 255
+    data[:, :, :, 0] -= means[0]
+    data[:, :, :, 0] /= stds[0]
+    data[:, :, :, 1] -= means[1]
+    data[:, :, :, 1] /= stds[1]
+    data[:, :, :, 2] -= means[2]
+    data[:, :, :, 2] /= stds[2]
+    return data
+
+
 def reload_session(model_name):
-    keras.backend.clear_session()
-    model = keras.models.load_model(model_name)
+    tf.keras.backend.clear_session()
+    model = tf.keras.models.load_model(model_name)
     return model
 
 
 #Return the confidence difference between closet maximum and the current x
 #It is untargeted FGSM, so trg refer to the class of the original input
 def dist_to_boundary(input, model, trg, eps_step=0.001, eps=0.1, fgsm_max_steps=8000, norm=np.inf, boundary_steps=500, num_classes=100):
-    target = keras.utils.to_categorical(trg, num_classes)
+    target = tf.keras.utils.to_categorical(trg, num_classes)
     loss = K.sum(K.square(model.output - target))
     gradients = K.gradients(loss, model.input)[0]
     fn = K.function([model.input], [gradients])
@@ -88,7 +100,7 @@ def distance_to_boundary(dataset, num_classes, num_targeted_classes, num_of_samp
         (x_train, y_train), (x_test, y_test) = mnist.load_data()
         x_train = x_train.reshape(x_train.shape[0], 28, 28, 1)
         x_test = x_test.reshape(x_test.shape[0], 28, 28, 1)
-    elif dataset == "cifar_10":
+    elif dataset == "cifar10":
         (x_train, y_train), (x_test, y_test) = cifar10.load_data()
     else:
         (x_train, y_train), (x_test, y_test) = cifar100.load_data()
@@ -99,14 +111,21 @@ def distance_to_boundary(dataset, num_classes, num_targeted_classes, num_of_samp
 
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
-    x_train /= 255
-    x_test /= 255
+    if dataset == "mnist":
+        x_train /= 255
+        x_test /= 255
+    else:
+        x_train = normalize_data(x_train, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        x_test = normalize_data(x_test, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+
+        x_train = np.transpose(x_train, axes=(0, 3, 1, 2))
+        x_test = np.transpose(x_test, axes=(0, 3, 1, 2))
 
     train_size = x_train.shape[0]
     test_size = x_test.shape[0]
 
     print(model_name)
-    model = keras.models.load_model(model_name)
+    model = tf.keras.models.load_model(model_name)
 
     confidence_train = model.predict(x_train)
     confidence_test = model.predict(x_test)
@@ -144,11 +163,15 @@ def distance_to_boundary(dataset, num_classes, num_targeted_classes, num_of_samp
             cor_class_yes_x = x_train[correctly_classified_indexes_train_of_this_class]
             cor_class_no_x = x_test[correctly_classified_indexes_test_of_this_class]
 
-            if num_of_samples_per_class > 0:
-                if cor_class_yes_x.shape[0] > num_of_samples_per_class:
-                    cor_class_yes_x = cor_class_yes_x[:num_of_samples_per_class]
-                if cor_class_no_x.shape[0] > num_of_samples_per_class:
-                    cor_class_no_x = cor_class_no_x[:num_of_samples_per_class]
+            cor_class_yes_indexes = np.nonzero(correctly_classified_indexes_train_of_this_class)[0]
+            cor_class_no_indexes = np.nonzero(correctly_classified_indexes_test_of_this_class)[0]
+
+            if cor_class_yes_x.shape[0] > num_of_samples_per_class:
+                cor_class_yes_x = cor_class_yes_x[:num_of_samples_per_class]
+                cor_class_yes_indexes = cor_class_yes_indexes[:num_of_samples_per_class]
+            if cor_class_no_x.shape[0] > num_of_samples_per_class:
+                cor_class_no_x = cor_class_no_x[:num_of_samples_per_class]
+                cor_class_no_indexes = cor_class_no_indexes[:num_of_samples_per_class]
 
             distance_per_sample_train = np.zeros(cor_class_yes_x.shape[0]) - 1
             distance_per_sample_test = np.zeros(cor_class_no_x.shape[0]) - 1
@@ -164,8 +187,9 @@ def distance_to_boundary(dataset, num_classes, num_targeted_classes, num_of_samp
                     print('Test samples progress: ', i, '/', cor_class_no_x.shape[0])
 
             if save_distances:
-                np.save(distance_save_dir + '/' + model_name.split('/')[-1] + '-cor-train-' + str(j), distance_per_sample_train)
-                np.save(distance_save_dir + '/' + model_name.split('/')[-1] + '-cor-test-' + str(j), distance_per_sample_test)
+                np.savez(distance_save_dir + '/' + 'cor-train-' + str(j), distance_per_sample_train, cor_class_yes_indexes)
+                np.savez(distance_save_dir + '/' + 'cor-test-' + str(j), distance_per_sample_test, cor_class_no_indexes)
+
 
             distance_per_sample_train = distance_per_sample_train[distance_per_sample_train != -1]
             distance_per_sample_test = distance_per_sample_test[distance_per_sample_test != -1]
@@ -184,14 +208,19 @@ def distance_to_boundary(dataset, num_classes, num_targeted_classes, num_of_samp
             incor_class_yes_x = x_train[incorrectly_classified_indexes_train_of_this_class]
             incor_class_no_x = x_test[incorrectly_classified_indexes_test_of_this_class]
 
+            incor_class_yes_indexes = np.nonzero(incorrectly_classified_indexes_train_of_this_class)[0]
+            incor_class_no_indexes = np.nonzero(incorrectly_classified_indexes_test_of_this_class)[0]
+
             if incor_class_yes_x.shape[0] < 10 or incor_class_no_x.shape[0] < 10:
                 print("skip distance computation for inccorectly labeled samples due to lack os misclassified samples!")
             else:
                 if num_of_samples_per_class > 0:
                     if incor_class_yes_x.shape[0] > num_of_samples_per_class:
                         incor_class_yes_x = incor_class_yes_x[:num_of_samples_per_class]
+                        incor_class_yes_indexes = incor_class_yes_indexes[:num_of_samples_per_class]
                     if incor_class_no_x.shape[0] > num_of_samples_per_class:
                         incor_class_no_x = incor_class_no_x[:num_of_samples_per_class]
+                        incor_class_no_indexes = incor_class_no_indexes[:num_of_samples_per_class]
 
                 distance_per_sample_train = np.zeros(incor_class_yes_x.shape[0]) - 1
                 distance_per_sample_test = np.zeros(incor_class_no_x.shape[0]) - 1
@@ -208,8 +237,8 @@ def distance_to_boundary(dataset, num_classes, num_targeted_classes, num_of_samp
                         print('Train samples progress: ', i, '/', incor_class_no_x.shape[0])
 
                 if save_distances:
-                    np.save(distance_save_dir + '/' + model_name.split('/')[-1] + '-incor-train-' + str(j), distance_per_sample_train)
-                    np.save(distance_save_dir + '/' + model_name.split('/')[-1] + '-incor-test-' + str(j), distance_per_sample_test)
+                    np.savez(distance_save_dir + '/' + 'incor-train-' + str(j), distance_per_sample_train, incor_class_yes_indexes)
+                    np.savez(distance_save_dir + '/' + 'incor-test-' + str(j), distance_per_sample_test, incor_class_no_indexes)
 
                 distance_per_sample_train = distance_per_sample_train[distance_per_sample_train != -1]
                 distance_per_sample_test = distance_per_sample_test[distance_per_sample_test != -1]

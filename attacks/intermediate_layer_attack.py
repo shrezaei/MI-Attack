@@ -1,4 +1,5 @@
 from __future__ import print_function
+import tensorflow as tf
 import keras
 from keras.datasets import mnist
 from keras.models import Sequential
@@ -6,18 +7,28 @@ from keras.layers import Dense
 from keras.datasets import cifar10
 from keras.datasets import cifar100
 import numpy as np
-from sklearn.metrics import f1_score, precision_score, recall_score, balanced_accuracy_score
-from utils import average_over_positive_values, average_over_positive_values_of_2d_array
+from sklearn.metrics import f1_score, precision_score, recall_score, balanced_accuracy_score, accuracy_score
+from utils import average_over_positive_values, average_over_positive_values_of_2d_array, false_alarm_rate
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from xgboost import XGBClassifier
 from sklearn.model_selection import RepeatedStratifiedKFold
 
 
-#skip attack model training if there is no correctly labeled samples
-cor_skip_threshold = 15
-#skip attack model training if there is no incorrectly labeled samples
+#skip attack model training if there is not enough correctly labeled samples
+cor_skip_threshold = 10
+#skip attack model training if there is not enough incorrectly labeled samples
 incor_skip_threshold = 5
+
+def normalize_data(data, means, stds):
+    data /= 255
+    data[:, :, :, 0] -= means[0]
+    data[:, :, :, 0] /= stds[0]
+    data[:, :, :, 1] -= means[1]
+    data[:, :, :, 1] /= stds[1]
+    data[:, :, :, 2] -= means[2]
+    data[:, :, :, 2] /= stds[2]
+    return data
 
 def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sampling, what_portion_of_samples_attacker_knows, num_classes, num_targeted_classes, model_name, verbose, show_MI_attack, show_MI_attack_separate_result, show_MI_attack_separate_result_for_incorrect):
 
@@ -25,7 +36,7 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
         (x_train, y_train), (x_test, y_test) = mnist.load_data()
         x_train = x_train.reshape(x_train.shape[0], 28, 28, 1)
         x_test = x_test.reshape(x_test.shape[0], 28, 28, 1)
-    elif dataset == "cifar_10":
+    elif dataset == "cifar10":
         (x_train, y_train), (x_test, y_test) = cifar10.load_data()
     else:
         (x_train, y_train), (x_test, y_test) = cifar100.load_data()
@@ -36,14 +47,21 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
 
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
-    x_train /= 255
-    x_test /= 255
+    if dataset == "mnist":
+        x_train /= 255
+        x_test /= 255
+    else:
+        x_train = normalize_data(x_train, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        x_test = normalize_data(x_test, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+
+        x_train = np.transpose(x_train, axes=(0, 3, 1, 2))
+        x_test = np.transpose(x_test, axes=(0, 3, 1, 2))
 
     train_size = x_train.shape[0]
     test_size = x_test.shape[0]
 
     print(model_name)
-    model = keras.models.load_model(model_name)
+    model = tf.keras.models.load_model(model_name)
 
     if dataset == "mnist":
         if intermediate_layer == -1:
@@ -55,20 +73,10 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
         else:
             print("Unknown intermediate layer!")
             exit()
-    elif dataset == "cifar_10" or dataset == "cifar_100":
+    elif dataset == "cifar10" or dataset == "cifar100":
         if intermediate_layer == -1:
-            AV_layer_output = model.layers[-5].output
-        elif intermediate_layer == -2:
-            AV_layer_output = model.layers[-6].output
-        else:
-            print("Unknown intermediate layer!")
-            exit()
-    elif dataset == "cifar_100_resnet" or dataset == "cifar_100_densenet":
-        if intermediate_layer == -1:
-            AV_layer_output = model.layers[-2].output
-        else:
-            print("Unknown intermediate layer!")
-            exit()
+            AV_layer_output = model.layers[-3].output
+
 
     train_stat = model.evaluate(x_train, y_train, verbose=0)
     test_stat = model.evaluate(x_test, y_test, verbose=0)
@@ -100,9 +108,13 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
     MI_attack_per_class_correctly_labeled = np.zeros(num_targeted_classes) - 1
     MI_attack_per_class_incorrectly_labeled = np.zeros(num_targeted_classes) - 1
 
-    MI_attack_auc_per_class = np.zeros(num_targeted_classes) - 1
-    MI_attack_auc_per_class_correctly_labeled = np.zeros(num_targeted_classes) - 1
-    MI_attack_auc_per_class_incorrectly_labeled = np.zeros(num_targeted_classes) - 1
+    MI_attack_acc_per_class = np.zeros(num_targeted_classes) - 1  # accuracy
+    MI_attack_acc_per_class_correctly_labeled = np.zeros(num_targeted_classes) - 1
+    MI_attack_acc_per_class_incorrectly_labeled = np.zeros(num_targeted_classes) - 1
+
+    MI_attack_far_per_class = np.zeros(num_targeted_classes) - 1
+    MI_attack_far_per_class_correctly_labeled = np.zeros(num_targeted_classes) - 1
+    MI_attack_far_per_class_incorrectly_labeled = np.zeros(num_targeted_classes) - 1
 
     MI_attack_prec_per_class = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_prec_per_class_correctly_labeled = np.zeros((num_targeted_classes, 2)) - 1
@@ -117,29 +129,37 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
     MI_attack_f1_per_class_incorrectly_labeled = np.zeros((num_targeted_classes, 2)) - 1
 
     MI_attack_per_class_correctly_labeled_separate = np.zeros(num_targeted_classes) - 1
+    MI_attack_acc_per_class_correctly_labeled_separate = np.zeros(num_targeted_classes) - 1
+    MI_attack_far_per_class_correctly_labeled_separate = np.zeros(num_targeted_classes) - 1
     MI_attack_prec_per_class_correctly_labeled_separate = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_rcal_per_class_correctly_labeled_separate = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_f1_per_class_correctly_labeled_separate = np.zeros((num_targeted_classes, 2)) - 1
 
-    #The performance of attack on its training set. To see if it can learn anything
+    # The performance of attack on its training set. To see if it can learn anything
     MI_attack_per_class_correctly_labeled_separate2 = np.zeros(num_targeted_classes) - 1
+    MI_attack_acc_per_class_correctly_labeled_separate2 = np.zeros(num_targeted_classes) - 1
+    MI_attack_far_per_class_correctly_labeled_separate2 = np.zeros(num_targeted_classes) - 1
     MI_attack_prec_per_class_correctly_labeled_separate2 = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_rcal_per_class_correctly_labeled_separate2 = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_f1_per_class_correctly_labeled_separate2 = np.zeros((num_targeted_classes, 2)) - 1
 
     MI_attack_per_class_incorrectly_labeled_separate = np.zeros(num_targeted_classes) - 1
+    MI_attack_acc_per_class_incorrectly_labeled_separate = np.zeros(num_targeted_classes) - 1
+    MI_attack_far_per_class_incorrectly_labeled_separate = np.zeros(num_targeted_classes) - 1
     MI_attack_prec_per_class_incorrectly_labeled_separate = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_rcal_per_class_incorrectly_labeled_separate = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_f1_per_class_incorrectly_labeled_separate = np.zeros((num_targeted_classes, 2)) - 1
 
-    #The performance of attack on its training set. To see if it can learn anything
+    # The performance of attack on its training set. To see if it can learn anything
     MI_attack_per_class_incorrectly_labeled_separate2 = np.zeros(num_targeted_classes) - 1
+    MI_attack_acc_per_class_incorrectly_labeled_separate2 = np.zeros(num_targeted_classes) - 1
+    MI_attack_far_per_class_incorrectly_labeled_separate2 = np.zeros(num_targeted_classes) - 1
     MI_attack_prec_per_class_incorrectly_labeled_separate2 = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_rcal_per_class_incorrectly_labeled_separate2 = np.zeros((num_targeted_classes, 2)) - 1
     MI_attack_f1_per_class_incorrectly_labeled_separate2 = np.zeros((num_targeted_classes, 2)) - 1
 
 
-    intermediate_model = keras.models.Model(inputs=model.input, outputs=AV_layer_output)
+    intermediate_model = tf.keras.models.Model(inputs=model.input, outputs=AV_layer_output)
     intermediate_value_train = intermediate_model.predict(x_train)
     intermediate_value_test = intermediate_model.predict(x_test)
     attack_input_dimension = intermediate_value_train.shape[1]
@@ -354,10 +374,13 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
                 y_pred = attack_model.predict_classes(MI_x_test)
             else:
                 y_pred = attack_model.predict(MI_x_test)
-            MI_attack_per_class[j] = balanced_accuracy_score(MI_y_test, y_pred)
-            MI_attack_prec_per_class[j] = precision_score(MI_y_test, y_pred, average=None)
-            MI_attack_rcal_per_class[j] = recall_score(MI_y_test, y_pred, average=None)
-            MI_attack_f1_per_class[j] = f1_score(MI_y_test, y_pred, average=None)
+            if y_pred.shape[0] > 0:
+                MI_attack_per_class[j] = balanced_accuracy_score(MI_y_test, y_pred)
+                MI_attack_acc_per_class[j] = accuracy_score(MI_y_test, y_pred)
+                MI_attack_far_per_class[j] = false_alarm_rate(MI_y_test, y_pred)
+                MI_attack_prec_per_class[j] = precision_score(MI_y_test, y_pred, average=None)
+                MI_attack_rcal_per_class[j] = recall_score(MI_y_test, y_pred, average=None)
+                MI_attack_f1_per_class[j] = f1_score(MI_y_test, y_pred, average=None)
 
             # MI attack accuracy on correctly labeled
             if np.sum(MI_correctly_labeled_indexes) > 0:
@@ -368,10 +391,11 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
                 else:
                     y_pred = attack_model.predict(temp_x)
                 MI_attack_per_class_correctly_labeled[j] = balanced_accuracy_score(temp_y, y_pred)
+                MI_attack_acc_per_class_correctly_labeled[j] = accuracy_score(temp_y, y_pred)
+                MI_attack_far_per_class_correctly_labeled[j] = false_alarm_rate(temp_y, y_pred)
                 MI_attack_prec_per_class_correctly_labeled[j] = precision_score(temp_y, y_pred, average=None)
                 MI_attack_rcal_per_class_correctly_labeled[j] = recall_score(temp_y, y_pred, average=None)
                 MI_attack_f1_per_class_correctly_labeled[j] = f1_score(temp_y, y_pred, average=None)
-
 
             # MI attack accuracy on incorrectly labeled
             if np.sum(MI_incorrectly_labeled_indexes) > 0:
@@ -382,26 +406,36 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
                 else:
                     y_pred = attack_model.predict(temp_x)
                 MI_attack_per_class_incorrectly_labeled[j] = balanced_accuracy_score(temp_y, y_pred)
+                MI_attack_acc_per_class_incorrectly_labeled[j] = accuracy_score(temp_y, y_pred)
+                MI_attack_far_per_class_incorrectly_labeled[j] = false_alarm_rate(temp_y, y_pred)
                 MI_attack_prec_per_class_incorrectly_labeled[j] = precision_score(temp_y, y_pred, average=None)
                 MI_attack_rcal_per_class_incorrectly_labeled[j] = recall_score(temp_y, y_pred, average=None)
                 MI_attack_f1_per_class_incorrectly_labeled[j] = f1_score(temp_y, y_pred, average=None)
-
+                incorrect_count = np.sum(temp_y == 1)
             if verbose:
-                print('\nMI Attack (all data):')
-                print('Accuracy:', MI_attack_per_class[j])
-                print('Precision:', MI_attack_prec_per_class[j])
-                print('Recall:', MI_attack_rcal_per_class[j])
-                print('F1:', MI_attack_f1_per_class[j])
-                print('\nMI Attack (correctly classified samples):')
-                print('Accuracy:', MI_attack_per_class_correctly_labeled[j])
-                print('Precision:', MI_attack_prec_per_class_correctly_labeled[j])
-                print('Recall:', MI_attack_rcal_per_class_correctly_labeled[j])
-                print('F1:', MI_attack_f1_per_class_correctly_labeled[j])
-                print('\nMI Attack (misclassified samples):')
-                print('Accuracy:', MI_attack_per_class_incorrectly_labeled[j])
-                print('Precision:', MI_attack_prec_per_class_incorrectly_labeled[j])
-                print('Recall:', MI_attack_rcal_per_class_incorrectly_labeled[j])
-                print('F1:', MI_attack_f1_per_class_incorrectly_labeled[j])
+                print('\nMI Attack (all):', MI_attack_per_class[j], MI_x_test.shape[0], np.sum([MI_y_train == 0]),
+                      np.sum([MI_y_train == 1]), np.sum([MI_y_test == 0]), np.sum([MI_y_test == 1]))
+                print('MI Attack(FAR):', MI_attack_far_per_class[j])
+                print('MI Attack(Acc-unbalanced):', MI_attack_acc_per_class[j])
+                print('MI Attack(Prec):', MI_attack_prec_per_class[j])
+                print('MI Attack(Rec):', MI_attack_rcal_per_class[j])
+                print('MI Attack(F1):', MI_attack_f1_per_class[j])
+                print('\nMI Attack (correctly classified):', MI_attack_per_class_correctly_labeled[j],
+                      np.sum(MI_correctly_labeled_indexes), np.sum(MI_y_test[MI_correctly_labeled_indexes] == 0),
+                      np.sum(MI_y_test[MI_correctly_labeled_indexes] == 1))
+                print('MI Attack(FAR):', MI_attack_far_per_class_correctly_labeled[j])
+                print('MI Attack(Acc-unbalanced):', MI_attack_acc_per_class_correctly_labeled[j])
+                print('MI Attack(Prec):', MI_attack_prec_per_class_correctly_labeled[j])
+                print('MI Attack(Rec):', MI_attack_rcal_per_class_correctly_labeled[j])
+                print('MI Attack(F1):', MI_attack_f1_per_class_correctly_labeled[j])
+                print('\nMI Attack (Misclassified):', MI_attack_per_class_incorrectly_labeled[j],
+                      np.sum(MI_incorrectly_labeled_indexes), np.sum(MI_y_test[MI_incorrectly_labeled_indexes] == 0),
+                      np.sum(MI_y_test[MI_incorrectly_labeled_indexes] == 1))
+                print('MI Attack(FAR):', MI_attack_far_per_class_incorrectly_labeled[j])
+                print('MI Attack(Acc-unbalanced):', MI_attack_acc_per_class_incorrectly_labeled[j])
+                print('MI Attack(Prec):', MI_attack_prec_per_class_incorrectly_labeled[j])
+                print('MI Attack(Rec):', MI_attack_rcal_per_class_incorrectly_labeled[j])
+                print('MI Attack(F1):', MI_attack_f1_per_class_incorrectly_labeled[j])
 
 
         # Use NN classifier to launch Membership Inference attack only on incorrectly labeled
@@ -457,6 +491,8 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
                 y_pred2 = attack_model.predict(cor_MI_x_train)
 
             MI_attack_per_class_correctly_labeled_separate2[j] = balanced_accuracy_score(cor_MI_y_train, y_pred2)
+            MI_attack_acc_per_class_correctly_labeled_separate2[j] = accuracy_score(cor_MI_y_train, y_pred2)
+            MI_attack_far_per_class_correctly_labeled_separate2[j] = false_alarm_rate(cor_MI_y_train, y_pred2)
             MI_attack_prec_per_class_correctly_labeled_separate2[j] = precision_score(cor_MI_y_train, y_pred2, average=None)
             MI_attack_rcal_per_class_correctly_labeled_separate2[j] = recall_score(cor_MI_y_train, y_pred2, average=None)
             MI_attack_f1_per_class_correctly_labeled_separate2[j] = f1_score(cor_MI_y_train, y_pred2, average=None)
@@ -466,18 +502,21 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
             # print('MI Attack:', MI_attack_rcal_per_class_correctly_labeled_separate2[j])
             # print('MI Attack:', MI_attack_f1_per_class_correctly_labeled_separate2[j])
 
-
             MI_attack_per_class_correctly_labeled_separate[j] = balanced_accuracy_score(cor_MI_y_test, y_pred)
+            MI_attack_acc_per_class_correctly_labeled_separate[j] = accuracy_score(cor_MI_y_test, y_pred)
+            MI_attack_far_per_class_correctly_labeled_separate[j] = false_alarm_rate(cor_MI_y_test, y_pred)
             MI_attack_prec_per_class_correctly_labeled_separate[j] = precision_score(cor_MI_y_test, y_pred, average=None)
             MI_attack_rcal_per_class_correctly_labeled_separate[j] = recall_score(cor_MI_y_test, y_pred, average=None)
             MI_attack_f1_per_class_correctly_labeled_separate[j] = f1_score(cor_MI_y_test, y_pred, average=None)
 
             if verbose:
-                print('\nMI Attack model trained only on correctly classified samples:')
-                print('Accuracy:', MI_attack_per_class_correctly_labeled_separate[j])
-                print('Precision:', MI_attack_prec_per_class_correctly_labeled_separate[j])
-                print('Recall:', MI_attack_rcal_per_class_correctly_labeled_separate[j])
-                print('F1:', MI_attack_f1_per_class_correctly_labeled_separate[j])
+                print('\nMI Attack (specific to correctly labeled):', j,
+                      MI_attack_per_class_correctly_labeled_separate[j], cor_MI_x_test.shape[0])
+                print('MI Attack(FAR):', MI_attack_far_per_class_correctly_labeled_separate[j])
+                print('MI Attack(Acc-unbalanced):', MI_attack_acc_per_class_correctly_labeled_separate[j])
+                print('MI Attack(Prec):', MI_attack_prec_per_class_correctly_labeled_separate[j])
+                print('MI Attack(Rec):', MI_attack_rcal_per_class_correctly_labeled_separate[j])
+                print('MI Attack(F1):', MI_attack_f1_per_class_correctly_labeled_separate[j])
 
         # Use NN classifier to launch Membership Inference attack only on incorrectly labeled
         if show_MI_attack_separate_result_for_incorrect and skip_attack_on_incorrectly_labeled == False:
@@ -532,6 +571,8 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
                 y_pred2 = attack_model.predict(incor_MI_x_train)
 
             MI_attack_per_class_incorrectly_labeled_separate2[j] = balanced_accuracy_score(incor_MI_y_train, y_pred2)
+            MI_attack_acc_per_class_incorrectly_labeled_separate2[j] = accuracy_score(incor_MI_y_train, y_pred2)
+            MI_attack_far_per_class_incorrectly_labeled_separate2[j] = false_alarm_rate(incor_MI_y_train, y_pred2)
             MI_attack_prec_per_class_incorrectly_labeled_separate2[j] = precision_score(incor_MI_y_train, y_pred2, average=None)
             MI_attack_rcal_per_class_incorrectly_labeled_separate2[j] = recall_score(incor_MI_y_train, y_pred2, average=None)
             MI_attack_f1_per_class_incorrectly_labeled_separate2[j] = f1_score(incor_MI_y_train, y_pred2, average=None)
@@ -541,107 +582,218 @@ def intermediate_layer_attack(dataset, intermediate_layer, attack_classifier, sa
             # print('MI Attack:', MI_attack_rcal_per_class_incorrectly_labeled_separate2[j])
             # print('MI Attack:', MI_attack_f1_per_class_incorrectly_labeled_separate2[j])
 
-
             MI_attack_per_class_incorrectly_labeled_separate[j] = balanced_accuracy_score(incor_MI_y_test, y_pred)
+            MI_attack_acc_per_class_incorrectly_labeled_separate[j] = accuracy_score(incor_MI_y_test, y_pred)
+            MI_attack_far_per_class_incorrectly_labeled_separate[j] = false_alarm_rate(incor_MI_y_test, y_pred)
             MI_attack_prec_per_class_incorrectly_labeled_separate[j] = precision_score(incor_MI_y_test, y_pred, average=None)
             MI_attack_rcal_per_class_incorrectly_labeled_separate[j] = recall_score(incor_MI_y_test, y_pred, average=None)
             MI_attack_f1_per_class_incorrectly_labeled_separate[j] = f1_score(incor_MI_y_test, y_pred, average=None)
-            if verbose:
-                print('\nMI Attack model trained only on correctly classified samples:')
-                print('Accuracy:', MI_attack_per_class_incorrectly_labeled_separate[j])
-                print('Precision:', MI_attack_prec_per_class_incorrectly_labeled_separate[j])
-                print('Recall:', MI_attack_rcal_per_class_incorrectly_labeled_separate[j])
-                print('F1:', MI_attack_f1_per_class_incorrectly_labeled_separate[j])
 
+            if verbose:
+                print('\nMI Attack (specific to incorrectly labeled):', j,
+                      MI_attack_per_class_incorrectly_labeled_separate[j], incor_MI_x_test.shape[0])
+            print('MI Attack(FAR):', MI_attack_far_per_class_incorrectly_labeled_separate[j])
+            print('MI Attack(Acc-unbalanced):', MI_attack_acc_per_class_incorrectly_labeled_separate[j])
+            print('MI Attack(Prec):', MI_attack_prec_per_class_incorrectly_labeled_separate[j])
+            print('MI Attack(Rec):', MI_attack_rcal_per_class_incorrectly_labeled_separate[j])
+            print('MI Attack(F1):', MI_attack_f1_per_class_incorrectly_labeled_separate[j])
 
     if show_MI_attack:
         MI_attack, MI_attack_std = average_over_positive_values(MI_attack_per_class)
-        MI_attack_correct_only, MI_attack_correct_only_std = average_over_positive_values(MI_attack_per_class_correctly_labeled)
-        MI_attack_incorrect_only, MI_attack_incorrect_only_std = average_over_positive_values(MI_attack_per_class_incorrectly_labeled)
+        MI_attack_correct_only, MI_attack_correct_only_std = average_over_positive_values(
+            MI_attack_per_class_correctly_labeled)
+        MI_attack_incorrect_only, MI_attack_incorrect_only_std = average_over_positive_values(
+            MI_attack_per_class_incorrectly_labeled)
+
+        MI_attack_acc, MI_attack_acc_std = average_over_positive_values(MI_attack_acc_per_class)
+        MI_attack_acc_correct_only, MI_attack_acc_correct_only_std = average_over_positive_values(
+            MI_attack_acc_per_class_correctly_labeled)
+        MI_attack_acc_incorrect_only, MI_attack_acc_incorrect_only_std = average_over_positive_values(
+            MI_attack_acc_per_class_incorrectly_labeled)
+
+        MI_attack_far, MI_attack_far_std = average_over_positive_values(MI_attack_far_per_class)
+        MI_attack_far_correct_only, MI_attack_far_correct_only_std = average_over_positive_values(
+            MI_attack_far_per_class_correctly_labeled)
+        MI_attack_far_incorrect_only, MI_attack_far_incorrect_only_std = average_over_positive_values(
+            MI_attack_far_per_class_incorrectly_labeled)
 
         MI_attack_prec, MI_attack_prec_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class)
-        MI_attack_prec_correct_only, MI_attack_prec_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_correctly_labeled)
-        MI_attack_prec_incorrect_only, MI_attack_prec_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_incorrectly_labeled)
+        MI_attack_prec_correct_only, MI_attack_prec_correct_only_std = average_over_positive_values_of_2d_array(
+            MI_attack_prec_per_class_correctly_labeled)
+        MI_attack_prec_incorrect_only, MI_attack_prec_incorrect_only_std = average_over_positive_values_of_2d_array(
+            MI_attack_prec_per_class_incorrectly_labeled)
 
         MI_attack_rcal, MI_attack_rcal_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class)
-        MI_attack_rcal_correct_only, MI_attack_rcal_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_correctly_labeled)
-        MI_attack_rcal_incorrect_only, MI_attack_rcal_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_incorrectly_labeled)
+        MI_attack_rcal_correct_only, MI_attack_rcal_correct_only_std = average_over_positive_values_of_2d_array(
+            MI_attack_rcal_per_class_correctly_labeled)
+        MI_attack_rcal_incorrect_only, MI_attack_rcal_incorrect_only_std = average_over_positive_values_of_2d_array(
+            MI_attack_rcal_per_class_incorrectly_labeled)
 
         MI_attack_f1, MI_attack_f1_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class)
-        MI_attack_f1_correct_only, MI_attack_f1_correct_only_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_correctly_labeled)
-        MI_attack_f1_incorrect_only, MI_attack_f1_incorrect_only_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_incorrectly_labeled)
+        MI_attack_f1_correct_only, MI_attack_f1_correct_only_std = average_over_positive_values_of_2d_array(
+            MI_attack_f1_per_class_correctly_labeled)
+        MI_attack_f1_incorrect_only, MI_attack_f1_incorrect_only_std = average_over_positive_values_of_2d_array(
+            MI_attack_f1_per_class_incorrectly_labeled)
 
     if show_MI_attack_separate_result:
-        MI_attack_correct_only_separate_model, MI_attack_correct_only_separate_model_std = average_over_positive_values(MI_attack_per_class_correctly_labeled_separate)
-        MI_attack_prec_correct_only_separate_model, MI_attack_prec_correct_only_separate_model_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_correctly_labeled_separate)
-        MI_attack_rcal_correct_only_separate_model, MI_attack_rcal_correct_only_separate_model_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_correctly_labeled_separate)
-        MI_attack_f1_correct_only_separate_model, MI_attack_f1_correct_only_separate_model_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_correctly_labeled_separate)
+        MI_attack_correct_only_separate_model, MI_attack_correct_only_separate_model_std = average_over_positive_values(
+            MI_attack_per_class_correctly_labeled_separate)
+        MI_attack_acc_correct_only_separate_model, MI_attack_acc_correct_only_separate_model_std = average_over_positive_values(
+            MI_attack_acc_per_class_correctly_labeled_separate)
+        MI_attack_far_correct_only_separate_model, MI_attack_far_correct_only_separate_model_std = average_over_positive_values(
+            MI_attack_far_per_class_correctly_labeled_separate)
+        MI_attack_prec_correct_only_separate_model, MI_attack_prec_correct_only_separate_model_std = average_over_positive_values_of_2d_array(
+            MI_attack_prec_per_class_correctly_labeled_separate)
+        MI_attack_rcal_correct_only_separate_model, MI_attack_rcal_correct_only_separate_model_std = average_over_positive_values_of_2d_array(
+            MI_attack_rcal_per_class_correctly_labeled_separate)
+        MI_attack_f1_correct_only_separate_model, MI_attack_f1_correct_only_separate_model_std = average_over_positive_values_of_2d_array(
+            MI_attack_f1_per_class_correctly_labeled_separate)
 
-        MI_attack_correct_only_separate_model2, MI_attack_correct_only_separate_model_std2 = average_over_positive_values(MI_attack_per_class_correctly_labeled_separate2)
-        MI_attack_prec_correct_only_separate_model2, MI_attack_prec_correct_only_separate_model_std2 = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_correctly_labeled_separate2)
-        MI_attack_rcal_correct_only_separate_model2, MI_attack_rcal_correct_only_separate_model_std2 = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_correctly_labeled_separate2)
-        MI_attack_f1_correct_only_separate_model2, MI_attack_f1_correct_only_separate_model_std2 = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_correctly_labeled_separate2)
+        MI_attack_correct_only_separate_model2, MI_attack_correct_only_separate_model_std2 = average_over_positive_values(
+            MI_attack_per_class_correctly_labeled_separate2)
+        MI_attack_acc_correct_only_separate_model2, MI_attack_acc_correct_only_separate_model_std2 = average_over_positive_values(
+            MI_attack_acc_per_class_correctly_labeled_separate2)
+        MI_attack_far_correct_only_separate_model2, MI_attack_far_correct_only_separate_model_std2 = average_over_positive_values(
+            MI_attack_far_per_class_correctly_labeled_separate2)
+        MI_attack_prec_correct_only_separate_model2, MI_attack_prec_correct_only_separate_model_std2 = average_over_positive_values_of_2d_array(
+            MI_attack_prec_per_class_correctly_labeled_separate2)
+        MI_attack_rcal_correct_only_separate_model2, MI_attack_rcal_correct_only_separate_model_std2 = average_over_positive_values_of_2d_array(
+            MI_attack_rcal_per_class_correctly_labeled_separate2)
+        MI_attack_f1_correct_only_separate_model2, MI_attack_f1_correct_only_separate_model_std2 = average_over_positive_values_of_2d_array(
+            MI_attack_f1_per_class_correctly_labeled_separate2)
 
     if show_MI_attack_separate_result_for_incorrect:
-        MI_attack_incorrect_only_separate_model, MI_attack_incorrect_only_separate_model_std = average_over_positive_values(MI_attack_per_class_incorrectly_labeled_separate)
-        MI_attack_prec_incorrect_only_separate_model, MI_attack_prec_incorrect_only_separate_model_std = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_incorrectly_labeled_separate)
-        MI_attack_rcal_incorrect_only_separate_model, MI_attack_rcal_incorrect_only_separate_model_std = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_incorrectly_labeled_separate)
-        MI_attack_f1_incorrect_only_separate_model, MI_attack_f1_incorrect_only_separate_model_std = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_incorrectly_labeled_separate)
+        MI_attack_incorrect_only_separate_model, MI_attack_incorrect_only_separate_model_std = average_over_positive_values(
+            MI_attack_per_class_incorrectly_labeled_separate)
+        MI_attack_acc_incorrect_only_separate_model, MI_attack_acc_incorrect_only_separate_model_std = average_over_positive_values(
+            MI_attack_acc_per_class_incorrectly_labeled_separate)
+        MI_attack_far_incorrect_only_separate_model, MI_attack_far_incorrect_only_separate_model_std = average_over_positive_values(
+            MI_attack_far_per_class_incorrectly_labeled_separate)
+        MI_attack_prec_incorrect_only_separate_model, MI_attack_prec_incorrect_only_separate_model_std = average_over_positive_values_of_2d_array(
+            MI_attack_prec_per_class_incorrectly_labeled_separate)
+        MI_attack_rcal_incorrect_only_separate_model, MI_attack_rcal_incorrect_only_separate_model_std = average_over_positive_values_of_2d_array(
+            MI_attack_rcal_per_class_incorrectly_labeled_separate)
+        MI_attack_f1_incorrect_only_separate_model, MI_attack_f1_incorrect_only_separate_model_std = average_over_positive_values_of_2d_array(
+            MI_attack_f1_per_class_incorrectly_labeled_separate)
 
-        MI_attack_incorrect_only_separate_model2, MI_attack_incorrect_only_separate_model_std2 = average_over_positive_values(MI_attack_per_class_incorrectly_labeled_separate2)
-        MI_attack_prec_incorrect_only_separate_model2, MI_attack_prec_incorrect_only_separate_model_std2 = average_over_positive_values_of_2d_array(MI_attack_prec_per_class_incorrectly_labeled_separate2)
-        MI_attack_rcal_incorrect_only_separate_model2, MI_attack_rcal_incorrect_only_separate_model_std2 = average_over_positive_values_of_2d_array(MI_attack_rcal_per_class_incorrectly_labeled_separate2)
-        MI_attack_f1_incorrect_only_separate_model2, MI_attack_f1_incorrect_only_separate_model_std2 = average_over_positive_values_of_2d_array(MI_attack_f1_per_class_incorrectly_labeled_separate2)
+        MI_attack_incorrect_only_separate_model2, MI_attack_incorrect_only_separate_model_std2 = average_over_positive_values(
+            MI_attack_per_class_incorrectly_labeled_separate2)
+        MI_attack_acc_incorrect_only_separate_model2, MI_attack_acc_incorrect_only_separate_model_std2 = average_over_positive_values(
+            MI_attack_acc_per_class_incorrectly_labeled_separate2)
+        MI_attack_far_incorrect_only_separate_model2, MI_attack_far_incorrect_only_separate_model_std2 = average_over_positive_values(
+            MI_attack_far_per_class_incorrectly_labeled_separate2)
+        MI_attack_prec_incorrect_only_separate_model2, MI_attack_prec_incorrect_only_separate_model_std2 = average_over_positive_values_of_2d_array(
+            MI_attack_prec_per_class_incorrectly_labeled_separate2)
+        MI_attack_rcal_incorrect_only_separate_model2, MI_attack_rcal_incorrect_only_separate_model_std2 = average_over_positive_values_of_2d_array(
+            MI_attack_rcal_per_class_incorrectly_labeled_separate2)
+        MI_attack_f1_incorrect_only_separate_model2, MI_attack_f1_incorrect_only_separate_model_std2 = average_over_positive_values_of_2d_array(
+            MI_attack_f1_per_class_incorrectly_labeled_separate2)
 
-    print("\n\n---------------------------------------")
-    print("Final results:")
-    print("Values are in a pair of average and standard deviation.")
+    print("\nModel accuracy:")
+    print(str(np.round(acc_train * 100, 2)), str(np.round(acc_test * 100, 2)))
 
     if show_MI_attack:
-        print("\n\nMI Attack accuracy:")
-        print('All data: ', str(np.round(MI_attack*100, 2)), str(np.round(MI_attack_std*100, 2)))
-        print('Correctly classified samples: ', str(np.round(MI_attack_correct_only*100, 2)), str(np.round(MI_attack_correct_only_std*100, 2)))
-        print('Misclassified samples: ', str(np.round(MI_attack_incorrect_only * 100, 2)), str(np.round(MI_attack_incorrect_only_std * 100, 2)))
+        print("\n\n\nMI Attack accuracy:")
+        print(str(np.round(MI_attack * 100, 2)), str(np.round(MI_attack_std * 100, 2)))
+        if show_MI_attack_separate_result:
+            print(str(np.round(MI_attack_correct_only * 100, 2)), str(np.round(MI_attack_correct_only_std * 100, 2)),
+                  str(np.round(MI_attack_incorrect_only * 100, 2)), str(np.round(MI_attack_incorrect_only_std * 100, 2)))
+
+        print("\n\n\nMI Attack FAR:")
+        print(str(np.round(MI_attack_far * 100, 2)), str(np.round(MI_attack_far_std * 100, 2)))
+        if show_MI_attack_separate_result:
+            print(str(np.round(MI_attack_far_correct_only * 100, 2)),
+              str(np.round(MI_attack_far_correct_only_std * 100, 2)),
+              str(np.round(MI_attack_far_incorrect_only * 100, 2)),
+              str(np.round(MI_attack_far_incorrect_only_std * 100, 2)))
+
+        print("\n\n\nMI Attack unbal. accuracy:")
+        print(str(np.round(MI_attack_acc * 100, 2)), str(np.round(MI_attack_acc_std * 100, 2)))
+        if show_MI_attack_separate_result:
+            print(str(np.round(MI_attack_acc_correct_only * 100, 2)),
+              str(np.round(MI_attack_acc_correct_only_std * 100, 2)),
+              str(np.round(MI_attack_acc_incorrect_only * 100, 2)),
+              str(np.round(MI_attack_acc_incorrect_only_std * 100, 2)))
 
         print("\nMI Attack precision:")
-        print('All data: ', str(np.round(MI_attack_prec*100, 2)), str(np.round(MI_attack_prec_std*100, 2)))
-        print('Correctly classified samples: ', str(np.round(MI_attack_prec_correct_only*100, 2)), str(np.round(MI_attack_prec_correct_only_std*100, 2)))
-        print('Misclassified samples: ', str(np.round(MI_attack_prec_incorrect_only*100, 2)), str(np.round(MI_attack_prec_incorrect_only_std*100, 2)))
+        print(str(np.round(MI_attack_prec * 100, 2)), str(np.round(MI_attack_prec_std * 100, 2)))
+        if show_MI_attack_separate_result:
+            print(str(np.round(MI_attack_prec_correct_only * 100, 2)),
+              str(np.round(MI_attack_prec_correct_only_std * 100, 2)),
+              str(np.round(MI_attack_prec_incorrect_only * 100, 2)),
+              str(np.round(MI_attack_prec_incorrect_only_std * 100, 2)))
 
         print("\nMI Attack recall:")
-        print('All data: ', str(np.round(MI_attack_rcal*100, 2)), str(np.round(MI_attack_rcal_std*100, 2)))
-        print('Correctly classified samples: ', str(np.round(MI_attack_rcal_correct_only*100, 2)), str(np.round(MI_attack_rcal_correct_only_std*100, 2)))
-        print('Misclassified samples: ', str(np.round(MI_attack_rcal_incorrect_only*100, 2)), str(np.round(MI_attack_rcal_incorrect_only_std*100, 2)))
+        print(str(np.round(MI_attack_rcal * 100, 2)), str(np.round(MI_attack_rcal_std * 100, 2)))
+        if show_MI_attack_separate_result:
+            print(str(np.round(MI_attack_rcal_correct_only * 100, 2)),
+              str(np.round(MI_attack_rcal_correct_only_std * 100, 2)),
+              str(np.round(MI_attack_rcal_incorrect_only * 100, 2)),
+              str(np.round(MI_attack_rcal_incorrect_only_std * 100, 2)))
 
         print("\nMI Attack f1:")
-        print('All data: ', str(np.round(MI_attack_f1*100, 2)), str(np.round(MI_attack_f1_std*100, 2)))
-        print('Correctly classified samples: ', str(np.round(MI_attack_f1_correct_only*100, 2)), str(np.round(MI_attack_f1_correct_only_std*100, 2)))
-        print('Misclassified samples: ', str(np.round(MI_attack_f1_incorrect_only*100, 2)), str(np.round(MI_attack_f1_incorrect_only_std*100, 2)))
+        print(str(np.round(MI_attack_f1 * 100, 2)), str(np.round(MI_attack_f1_std * 100, 2)))
+        if show_MI_attack_separate_result:
+            print(str(np.round(MI_attack_f1_correct_only * 100, 2)), str(np.round(MI_attack_f1_correct_only_std * 100, 2)),
+              str(np.round(MI_attack_f1_incorrect_only * 100, 2)),
+              str(np.round(MI_attack_f1_incorrect_only_std * 100, 2)))
 
     if show_MI_attack_separate_result:
-        # print("\nMI Attack accuracy, specific to correctly labeled samples (on its train set):")
-        # print(str(np.round(MI_attack_correct_only_separate_model2*100, 2)), str(np.round(MI_attack_correct_only_separate_model_std2*100, 2)))
-        # print(str(np.round(MI_attack_prec_correct_only_separate_model2*100, 2)), str(np.round(MI_attack_prec_correct_only_separate_model_std2*100, 2)))
-        # print(str(np.round(MI_attack_rcal_correct_only_separate_model2*100, 2)), str(np.round(MI_attack_rcal_correct_only_separate_model_std2*100, 2)))
-        # print(str(np.round(MI_attack_f1_correct_only_separate_model2*100, 2)), str(np.round(MI_attack_f1_correct_only_separate_model_std2*100, 2)))
+        print("\nMI Attack accuracy, specific to correctly labeled samples (on its train set):")
+        print(str(np.round(MI_attack_correct_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_correct_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_far_correct_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_far_correct_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_acc_correct_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_acc_correct_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_prec_correct_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_prec_correct_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_rcal_correct_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_rcal_correct_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_f1_correct_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_f1_correct_only_separate_model_std2 * 100, 2)))
 
-        print("\nMI attack specific to correctly labeled samples:")
-        print('Accuracy: ', str(np.round(MI_attack_correct_only_separate_model*100, 2)), str(np.round(MI_attack_correct_only_separate_model_std*100, 2)))
-        print('Precision: ', str(np.round(MI_attack_prec_correct_only_separate_model*100, 2)), str(np.round(MI_attack_prec_correct_only_separate_model_std*100, 2)))
-        print('Recall: ', str(np.round(MI_attack_rcal_correct_only_separate_model*100, 2)), str(np.round(MI_attack_rcal_correct_only_separate_model_std*100, 2)))
-        print('F1: ', str(np.round(MI_attack_f1_correct_only_separate_model*100, 2)), str(np.round(MI_attack_f1_correct_only_separate_model_std*100, 2)))
-
+        print("\nMI Attack accuracy, specific to correctly labeled samples:")
+        print(str(np.round(MI_attack_correct_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_correct_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_far_correct_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_far_correct_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_acc_correct_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_acc_correct_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_prec_correct_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_prec_correct_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_rcal_correct_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_rcal_correct_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_f1_correct_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_f1_correct_only_separate_model_std * 100, 2)))
 
     if show_MI_attack_separate_result_for_incorrect:
-        # print("\nMI Attack accuracy, specific to ***incorrectly labeled samples (on its train set):")
-        # print(str(np.round(MI_attack_incorrect_only_separate_model2*100, 2)), str(np.round(MI_attack_incorrect_only_separate_model_std2*100, 2)))
-        # print(str(np.round(MI_attack_prec_incorrect_only_separate_model2*100, 2)), str(np.round(MI_attack_prec_incorrect_only_separate_model_std2*100, 2)))
-        # print(str(np.round(MI_attack_rcal_incorrect_only_separate_model2*100, 2)), str(np.round(MI_attack_rcal_incorrect_only_separate_model_std2*100, 2)))
-        # print(str(np.round(MI_attack_f1_incorrect_only_separate_model2*100, 2)), str(np.round(MI_attack_f1_incorrect_only_separate_model_std2*100, 2)))
+        print("\nMI Attack accuracy, specific to ***incorrectly labeled samples (on its train set):")
+        print(str(np.round(MI_attack_incorrect_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_incorrect_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_far_incorrect_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_far_incorrect_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_acc_incorrect_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_acc_incorrect_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_prec_incorrect_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_prec_incorrect_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_rcal_incorrect_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_rcal_incorrect_only_separate_model_std2 * 100, 2)))
+        print(str(np.round(MI_attack_f1_incorrect_only_separate_model2 * 100, 2)),
+              str(np.round(MI_attack_f1_incorrect_only_separate_model_std2 * 100, 2)))
 
-        print("\nMI attack specific to incorrectly labeled samples:")
-        print('Accuracy: ', str(np.round(MI_attack_incorrect_only_separate_model*100, 2)), str(np.round(MI_attack_incorrect_only_separate_model_std*100, 2)))
-        print('Precision: ', str(np.round(MI_attack_prec_incorrect_only_separate_model*100, 2)), str(np.round(MI_attack_prec_incorrect_only_separate_model_std*100, 2)))
-        print('Recall: ', str(np.round(MI_attack_rcal_incorrect_only_separate_model*100, 2)), str(np.round(MI_attack_rcal_incorrect_only_separate_model_std*100, 2)))
-        print('F1: ', str(np.round(MI_attack_f1_incorrect_only_separate_model*100, 2)), str(np.round(MI_attack_f1_incorrect_only_separate_model_std*100, 2)))
+        print("\nMI Attack accuracy, specific to ***incorrectly labeled samples:")
+        print(str(np.round(MI_attack_incorrect_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_incorrect_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_far_incorrect_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_far_incorrect_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_acc_incorrect_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_acc_incorrect_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_prec_incorrect_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_prec_incorrect_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_rcal_incorrect_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_rcal_incorrect_only_separate_model_std * 100, 2)))
+        print(str(np.round(MI_attack_f1_incorrect_only_separate_model * 100, 2)),
+              str(np.round(MI_attack_f1_incorrect_only_separate_model_std * 100, 2)))
+
 
