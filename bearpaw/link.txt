@@ -1,0 +1,2 @@
+Git the pytorch bearpaw repository from the following link and put into this folder:
+https://github.com/bearpaw/pytorch-classification
