@@ -1,5 +1,5 @@
 # On the Difficulty of Membership Inference Attacks
-The paper is available at: www.archix,org ...
+The paper is available at: [www.archix,org ...](https://openaccess.thecvf.com/content/CVPR2021/papers/Rezaei_On_the_Difficulty_of_Membership_Inference_Attacks_CVPR_2021_paper.pdf)
 
 ## Library Versions
 * Python 3.5
